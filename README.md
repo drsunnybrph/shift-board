@@ -91,11 +91,12 @@ Neutral "not needed" markers: `x`, `off`, `-`.
 
 ## Getting someone else set up
 
-There's no account and no invite. You send the URL, they open it, and they're looking at demo data
-until they load a schedule themselves. Realistically that's a five-minute one-time setup on a phone:
+There's no account and no invite. You send the URL, they open it, and they land on the sample
+department with a banner saying so and a button pointing at the loader. Realistically that's a
+five-minute one-time setup on a phone:
 
 1. Save the schedule to the phone first. From Mail or Teams, tap the attachment → **Save to Files**.
-2. Open the site → **Setup** tab → **Choose a file** → Browse → pick the xlsx.
+2. Open the site → **Schedule** tab → **Choose a file** → pick the xlsx.
 3. Pick their name from the dropdown at the top right.
 4. **Add to Home Screen** (Safari share sheet, or Chrome's menu). It opens full-screen after that
    and is far easier to find again than a URL in a text thread.

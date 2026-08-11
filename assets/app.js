@@ -204,6 +204,8 @@ function viewGaps() {
 function viewSetup() {
   const s = state.sched;
   const r = state.rules;
+  const loaded = s.meta.source === 'uploaded';
+
   const sw = (key, on, label, hint) => `<div class="row"><div><div class="lbl">${label}</div>
     <div class="hint">${hint}</div></div>
     <button class="switch" role="switch" aria-checked="${on}" data-rule="${key}"></button></div>`;
@@ -211,26 +213,63 @@ function viewSetup() {
     <div class="hint">${hint}</div></div>
     <input type="number" data-num="${key}" value="${val}" min="0" step="0.5"></div>`;
 
-  return `<div class="eyebrow"><span>Schedule</span></div>
-  <div class="card"><div class="row"><div><div class="lbl">${esc(s.meta.label || 'Loaded schedule')}</div>
-    <div class="hint">${s.staff.length} people &middot; ${s.n} days &middot; ${s.positions.length} positions</div></div>
-    <button class="btn o sm" data-act="reset">Forget &amp; use demo</button></div></div>
+  const status = loaded
+    ? `<div class="card ok-card"><div class="row"><div>
+         <div class="lbl">&#10003; Your schedule is loaded</div>
+         <div class="hint">${esc(s.meta.label || 'Loaded schedule')} &mdash; ${s.staff.length} people,
+           ${s.n} days, ${s.positions.length} positions. Saved in this browser, so you won&rsquo;t
+           need to load it again on this device.</div></div>
+         <button class="btn o sm" data-act="reset">Remove</button></div></div>`
+    : '';
 
-  ${s.meta.source === 'uploaded' ? '' : `<div class="card"><div class="row"><div>
-    <div class="lbl">You&rsquo;re on demo data</div>
-    <div class="hint">Twenty-five invented people. Load your own schedule below to use it for real.
-      Save the file to your phone first &mdash; from Mail or Teams, tap the attachment, then Save to Files.</div>
-  </div></div></div>`}
+  return `${status}
+  <div class="eyebrow"><span>${loaded ? 'Replace it' : 'Step 1 &mdash; load your schedule'}</span></div>
 
-  <div class="eyebrow"><span>Load your own schedule</span></div>
   <div class="drop" id="drop">
-    <div class="big">Drop an .xlsx here</div>
-    <p>The file is read in your browser and never uploaded anywhere.<br>
-       Names in the first column, day-of-week and dates across the top.</p>
-    <button class="btn o sm" data-act="pick">Choose a file</button>
+    <div class="big">Drop your schedule file here</div>
+    <p>Excel file &mdash; .xlsx, .xls, or .xlsm</p>
+    <button class="btn p" data-act="pick">Choose a file</button>
     <input type="file" id="file" accept=".xlsx,.xls,.xlsm" hidden>
   </div>
   <div id="parseErr"></div>
+
+  <div class="card safe"><div class="safe-in">
+    <div class="lbl">Your file never leaves this device</div>
+    <div class="hint">There is no server to send it to. The file is opened and read inside your
+      browser, and what it reads is kept in this browser only. Nothing is uploaded, nothing is
+      shared, and no one else can see it &mdash; including whoever built this.</div>
+  </div></div>
+
+  <div class="eyebrow"><span>On a phone</span></div>
+  <div class="card"><div class="steps">
+    <div class="step"><span class="sn">1</span><div>Open the email or message with the schedule
+      attached. Tap the attachment, then <b>Save to Files</b>.</div></div>
+    <div class="step"><span class="sn">2</span><div>Come back here, tap <b>Choose a file</b>, and
+      pick it from Files.</div></div>
+    <div class="step"><span class="sn">3</span><div>Choose your name from the picker at the top
+      right. That&rsquo;s it.</div></div>
+    <div class="step"><span class="sn">4</span><div>Optional &mdash; use your browser&rsquo;s share
+      menu and <b>Add to Home Screen</b> so it opens like an app.</div></div>
+  </div></div>
+
+  <div class="eyebrow"><span>What the file needs to look like</span></div>
+  <div class="card"><div class="fmt">
+    <div class="fmt-grid mono">
+      <div class="fh"></div><div class="fh">Su</div><div class="fh">M</div><div class="fh">T</div><div class="fh">W</div><div class="fh">Th</div>
+      <div class="fh"></div><div class="fh">16</div><div class="fh">17</div><div class="fh">18</div><div class="fh">19</div><div class="fh">20</div>
+      <div class="fn">A. Chen</div><div class="fc on">ED</div><div class="fc on">ED</div><div class="fc"></div><div class="fc on">ICU</div><div class="fc lv">PTO</div>
+      <div class="fn">R. Patel</div><div class="fc"></div><div class="fc on">C1</div><div class="fc on">C1</div><div class="fc on">C1</div><div class="fc"></div>
+    </div>
+    <div class="hint" style="margin-top:10px">Names down the first column. Day-of-week and dates
+      across the top. Shift codes in the cells. Most hand-built hospital schedules already look
+      like this &mdash; you probably don&rsquo;t need to change anything.</div>
+    <div class="hint" style="margin-top:8px"><b>One thing it does need:</b> a legend somewhere in the
+      sheet pairing each code with its hours, like <span class="mono">ED&nbsp;&nbsp;1430-0100</span>.
+      Without it the tool can&rsquo;t work out rest between shifts, and it will tell you so rather
+      than guess.</div>
+    <div class="hint" style="margin-top:8px">Optional: a second sheet named Check, Staffing, or
+      Coverage marking which positions are required each day fills in the Gaps tab.</div>
+  </div></div>
 
   <div class="eyebrow"><span>Overtime and rest rules</span></div>
   <div class="card">
@@ -256,6 +295,7 @@ function viewSetup() {
       are not modelled at all. Confirm anything here against your actual policy before treating a
       flag as authoritative.</div>
   </div></div></div>
+
   <div class="eyebrow"><span>What this does and doesn&rsquo;t do</span></div>
   <div class="card"><div class="row"><div>
     <div class="lbl">This board is yours alone</div>
@@ -267,14 +307,33 @@ function viewSetup() {
     who can work a shift, and marks what it costs. Your payroll and HR rules govern, not this tool.</div>`;
 }
 
+function onDemo() {
+  return !state.sched || state.sched.meta.source !== 'uploaded';
+}
+
+/* Persistent until a real schedule is loaded. Not dismissible on purpose —
+   someone should never mistake the sample department for their own. */
+function demoBanner() {
+  if (!onDemo()) return '';
+  return `<div class="demo">
+    <div class="demo-tag">Sample data</div>
+    <div class="demo-body">
+      <b>This is an invented department.</b> Twenty-five made-up people on a made-up rotation
+      &mdash; here so you can click around and see how it works before trusting it with anything real.
+      <button class="btn p sm demo-cta" data-tab="setup">Load your schedule</button>
+    </div>
+  </div>`;
+}
+
 function render() {
   const s = state.sched;
   $('range').textContent = `${s.dateLabel(0)} \u2013 ${s.dateLabel(s.n - 1)}`;
-  $('main').innerHTML =
+  const body =
     state.tab === 'board' ? viewBoard() :
     state.tab === 'post'  ? viewPost()  :
     state.tab === 'mine'  ? viewMine()  :
     state.tab === 'gaps'  ? viewGaps()  : viewSetup();
+  $('main').innerHTML = (state.tab === 'setup' ? '' : demoBanner()) + body;
   document.querySelectorAll('.tab').forEach(t => t.setAttribute('aria-selected', t.dataset.tab === state.tab));
   document.querySelectorAll('nav button').forEach(b => b.setAttribute('aria-current', b.dataset.tab === state.tab));
   if (state.tab === 'setup') wireDrop();
@@ -384,9 +443,11 @@ async function handleFile(f) {
     await save();
     state.tab = 'board';
     render();
-    toast(`Loaded ${model.staff.length} people from ${f.name}`);
+    toast(`Loaded ${model.staff.length} people \u2014 pick your name up top`);
   } catch (err) {
-    $('parseErr').innerHTML = `<div class="err">${esc(err.message)}</div>`;
+    $('parseErr').innerHTML = `<div class="err"><b>Couldn\u2019t read that file.</b><br>${esc(err.message)}
+      <br><br>Check the layout against the example below. If it still won\u2019t load, the sheet is probably
+      arranged differently from what the parser expects \u2014 that\u2019s a bug worth reporting, not your mistake.</div>`;
   }
 }
 

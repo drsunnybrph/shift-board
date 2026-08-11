@@ -176,3 +176,48 @@ nav button[aria-current="true"]{color:var(--blue)}
 .toast.show{opacity:1;transform:translate(-50%,0)}
 .disc{font-size:11.5px;color:var(--muted);text-align:center;padding:18px 20px 8px;line-height:1.5}
 @media(prefers-reduced-motion:reduce){*{transition:none!important}}
+
+/* ---------- demo banner ---------- */
+.demo{display:flex;gap:11px;align-items:flex-start;background:#FFF9E3;border:1px solid #EBD98A;
+  border-left:3px solid var(--mark);border-radius:var(--r);padding:12px 13px;margin-bottom:12px}
+.demo-tag{flex-shrink:0;font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:.1em;
+  text-transform:uppercase;background:var(--ink);color:#fff;border-radius:4px;padding:3px 6px;margin-top:2px}
+.demo-body{font-size:13px;line-height:1.5;color:#5A4A15}
+.demo-body b{color:var(--ink)}
+.demo .demo-cta{display:block;width:fit-content;margin-top:12px}
+
+/* ---------- upload emphasis ---------- */
+.drop{padding:30px 18px}
+.drop .big{font-size:17px}
+.drop p{margin:5px 0 15px}
+.drop .btn.p{max-width:230px;margin:0 auto}
+
+.card.safe{background:var(--green-soft);border-color:#B9DFD9}
+.safe-in{padding:12px 13px}
+.safe-in .lbl{font-weight:600;font-size:14px;color:var(--green);margin-bottom:3px}
+.safe-in .hint{font-size:12.5px;color:#2E5C56;line-height:1.5}
+
+.card.ok-card{background:var(--green-soft);border-color:#B9DFD9}
+.ok-card .lbl{color:var(--green);font-weight:600}
+
+/* ---------- numbered steps ---------- */
+.steps{padding:11px 13px}
+.step{display:flex;gap:10px;align-items:flex-start;font-size:13.5px;line-height:1.5;margin-bottom:11px}
+.step:last-child{margin-bottom:0}
+.sn{flex-shrink:0;width:20px;height:20px;border-radius:50%;background:var(--ink2);color:#fff;
+  font-family:'IBM Plex Mono',monospace;font-size:11px;font-weight:600;
+  display:flex;align-items:center;justify-content:center;margin-top:1px}
+
+/* ---------- format example ---------- */
+.fmt{padding:12px 13px}
+.fmt-grid{display:grid;grid-template-columns:1.5fr repeat(5,1fr);gap:2px;font-size:10px}
+.fh{text-align:center;color:var(--muted);padding:3px 0;font-weight:500}
+.fn{padding:4px 5px;background:var(--paper);border-radius:3px;font-size:9.5px;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.fc{text-align:center;padding:4px 0;border:1px solid var(--rule);border-radius:3px;
+  background:#fff;min-height:22px;font-size:9.5px}
+.fc.on{background:var(--mark);border-color:#E5BE2E;font-weight:600}
+.fc.lv{background:var(--green-soft);border-color:#B9DFD9;color:var(--green);font-weight:600}
+.fmt .hint{font-size:12.5px;color:var(--muted);line-height:1.5}
+.fmt .hint b{color:var(--ink)}
+.err b{display:inline-block;margin-bottom:2px}

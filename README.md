@@ -111,6 +111,54 @@ If that's more friction than the person is willing to absorb — which is a comp
 place to land — the honest fallback is that you run it and send them the screenshot. The ranked
 list is the valuable part; how it reaches them barely matters.
 
+## Two directions
+
+**Give one up** — you can't work a shift, and the board ranks who could cover it.
+
+**Want a shift** — the per diem direction, in three steps. Mark the days you can work, pick the
+shifts you want, and the tool assembles the whole request into one plan: who to ask, what each
+person gets in return, and your net hours. Where a shift is already held by someone on a benefited line,
+taking it costs them real hours, so it works out how they come out whole and ranks the options:
+
+- **A shift back** — they take one of yours. Hours unchanged on both sides.
+- **A three-way relay** — they take a shift from a third person who wants to give it up. This is
+  the shape most real swaps take, because the person with hours to spare is rarely the person
+  asking. A shift already posted on the board is the strong case; anything else is flagged as
+  needing that third person's agreement, since it moves the lost hours onto them.
+- **An open shift instead** — they pick up an unfilled required position. Hours unchanged, and the
+  department ends up better covered than it started.
+- **PTO** — their shift stays covered because you're working it, but they spend accrued balance.
+  Ranked last: it's the only option that costs them something they can't get back.
+
+Every plan is checked so no required position ends the day empty. A plan that fills your shift by
+emptying another one is not a plan, and won't be shown.
+
+### Availability from cell colour
+
+Many hand-built schedules record per diem availability as a fill colour, which is information that
+exists nowhere in the cell text. The parser reads it, including theme-indexed colours, which arrive
+as an index plus a tint rather than a hex value and have to be resolved against the workbook theme.
+
+Telling a marking system apart from decoration matters here: weekend shading and a closed-clinic
+colour look identical to availability if you only count cells. The test used is whether the marked
+columns *vary between people*. Decoration paints the same columns for everybody; availability
+differs person to person.
+
+When a sheet encodes availability, it prefills, and everyone's availability is respected when
+ranking who can cover a shift — so the planner won't propose a shift to someone who already said
+they're not around. What you set in the app always wins over what the sheet says.
+
+When a sheet encodes nothing, availability is declared rather than inferred: a blank cell means
+"not scheduled", which says nothing about whether that person is free. You tap the days you can
+work, stored on your device only.
+
+When you request several shifts at once, plans are reconciled against each other: the same
+give-back shift is never promised twice, and you can't end up picking up two shifts on the same
+day. Anything that can't be made to work is called out rather than quietly dropped.
+
+The finished plan copies to your clipboard as plain text, which is usually the fastest way to get
+it in front of the people who have to agree to it.
+
 ## How ranking works
 
 Three principles are baked into `assets/engine.js`, and they're the opinionated part:

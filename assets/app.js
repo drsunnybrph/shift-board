@@ -1,6 +1,9 @@
 import { DEMO } from './demo-data.js';
 import { Schedule, findCoverage, DEFAULT_RULES, LEAVE_CODES } from './engine.js';
 import { readFile } from './parser.js';
+import { planRequests, reconcile, makeWholePlans, requestableOn,
+         loadAvailability, saveAvailability, openShifts,
+         freeDays, summarise } from './request.js';
 
 const MONTH = ['','Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 const DOWFULL = { Su:'Sunday', M:'Monday', T:'Tuesday', W:'Wednesday', Th:'Thursday', F:'Friday', Fr:'Friday', Sa:'Saturday' };
@@ -13,7 +16,10 @@ const state = {
   posts: [],
   rules: { ...DEFAULT_RULES },
   savedModel: null,
-  pending: null
+  pending: null,
+  avail: new Set(),
+  wantMode: 'days',
+  picks: new Set()
 };
 
 const $ = id => document.getElementById(id);
@@ -325,6 +331,278 @@ function demoBanner() {
   </div>`;
 }
 
+
+/* ============================================================
+   "I want this shift" — the per diem direction
+   ============================================================ */
+
+function planBadge(p) {
+  if (!p) return '<span class="tag u">No workable plan</span>';
+  if (p.kind === 'open')   return '<span class="tag g">Unfilled &mdash; nobody loses hours</span>';
+  if (p.kind === 'swap')   return '<span class="tag g">Even trade available</span>';
+  if (p.kind === 'pickup') return '<span class="tag g">They pick up an open shift</span>';
+  if (p.kind === 'relay')  return p.via && p.via.posted
+    ? `<span class="tag g">${esc(p.third)} covers a posted shift</span>`
+    : `<span class="tag b">Three-way via ${esc(p.third)}</span>`;
+  if (p.kind === 'pto')    return '<span class="tag a">Costs them PTO</span>';
+  return '';
+}
+
+function stepBar(active) {
+  const steps = [['days', 'Your days'], ['browse', 'Pick shifts'], ['plan', 'The plan']];
+  return `<div class="steps-bar">${steps.map(([k, label], i) =>
+    `<button class="stepb${k === active ? ' on' : ''}" data-step="${k}">
+      <span class="sb-n">${i + 1}</span>${label}</button>`).join('')}</div>`;
+}
+
+function viewWant() {
+  const s = state.sched, me = s.person(state.me);
+  if (!me) return `<div class="empty"><div class="big">Pick your name up top</div></div>`;
+
+  /* ---------- step 1: which days ---------- */
+  if (state.wantMode === 'days') {
+    const free = freeDays(s, me);
+    const declaredDays = s.declaredAvailable(me);
+    let grid = '';
+    for (let w = 0; w < s.n; w += 7) {
+      const end = Math.min(w + 6, s.n - 1);
+      grid += `<div class="wk"><div class="wklab">
+          <span>${s.dateLabel(w)} &ndash; ${s.dateLabel(end)}</span>
+          <button class="minib" data-week="${w}">All free</button></div>
+        <div class="wkgrid">`;
+      for (let i = w; i <= end; i++) {
+        const d = s.dates[i], v = s.cell(me, i);
+        const working = s.isWork(v);
+        const leave = v && !working && v !== 'x';
+        const blocked = working || leave;
+        const on = state.avail.has(i);
+        const marked = declaredDays ? declaredDays.includes(i) : false;
+        grid += `<button class="cell av${on ? ' picked' : ''}${blocked ? ' busy' : ''}${
+              marked && !on && !blocked ? ' marked' : ''}"
+            data-avail="${i}" ${blocked ? 'disabled' : ''}>
+          <div class="cd">${d.dow} ${d.d}</div>
+          <div class="cc">${blocked ? esc(v) : on ? '\u2713' : ''}</div></button>`;
+      }
+      grid += '</div></div>';
+    }
+    const declared = s.declaredAvailable(me);
+    const intro = declared
+      ? `<div class="card ok-card"><div class="safe-in">
+           <div class="lbl">&#10003; Read from your schedule</div>
+           <div class="hint">This sheet marks availability by cell colour, and yours is filled in
+             below. Change anything that&rsquo;s out of date &mdash; what you set here wins.</div>
+         </div></div>`
+      : `<div class="card"><div class="safe-in">
+           <div class="lbl">${free.length} days you aren&rsquo;t scheduled</div>
+           <div class="hint">Not being scheduled isn&rsquo;t the same as being free, so nothing is
+             selected for you. Tap the days you could actually work, or use the shortcuts.</div>
+         </div></div>`;
+
+    return stepBar('days') + intro + `
+      <div class="bulk">
+        <button class="btn o sm" data-act="allfree">${
+          declared ? `All ${free.length} marked` : `Select all ${free.length}`}</button>
+        <button class="btn o sm" data-act="weekends">Weekends only</button>
+        <button class="btn o sm" data-act="clearavail">Clear</button>
+      </div>
+      <div class="eyebrow"><span>Your availability</span>
+        <span class="mono">${state.avail.size} selected</span></div>
+      ${grid}
+      <button class="btn p" data-step="browse" ${state.avail.size ? '' : 'disabled'}>
+        ${state.avail.size ? `See what&rsquo;s available on ${state.avail.size} day${state.avail.size > 1 ? 's' : ''}` : 'Pick at least one day'}
+      </button>
+      <div class="disc">Saved on this device only.</div>`;
+  }
+
+  /* ---------- step 2: pick shifts ---------- */
+  if (state.wantMode === 'browse') {
+    const all = planRequests(s, me, state.avail, state.rules, state.posts);
+    if (!all.length) {
+      return stepBar('browse') +
+        `<div class="empty"><div class="big">Nothing available on those days</div>
+          Every position is filled by someone who can&rsquo;t be made whole, or would leave you
+          without enough rest between shifts.</div>
+        <button class="btn o" data-step="days">Change your days</button>`;
+    }
+    const byDay = {};
+    for (const r of all) (byDay[r.day] ||= []).push(r);
+
+    let h = stepBar('browse') +
+      `<div class="eyebrow"><span>Tap the shifts you want</span>
+        <span class="mono">${state.picks.size} selected</span></div>`;
+
+    for (const day of Object.keys(byDay).sort((a, b) => a - b)) {
+      h += `<div class="daygroup"><div class="dayhead">${s.dateLabel(+day)} &middot;
+        ${DOWFULL[s.dates[+day].dow] || s.dates[+day].dow}</div>`;
+      const dayPicked = [...state.picks].some(k => +k.split(':')[0] === +day);
+      for (const r of byDay[day].slice(0, 8)) {
+        const key = `${r.day}:${r.code}`;
+        const on = state.picks.has(key);
+        const blocked = dayPicked && !on;
+        const pos = s.position(r.code);
+        h += `<div class="card pickcard${on ? ' picked' : ''}${blocked ? ' blocked' : ''}">
+          <button class="ctop" data-pick="${key}" ${blocked ? 'disabled' : ''}>
+            <div class="tick">${on ? '\u2713' : ''}</div>
+            <div class="cbody">
+              <div class="line1"><span class="code">${esc(r.code)}</span>
+                <span class="time mono">${pos ? esc(pos.time) : ''}</span></div>
+              <div class="who">${r.open ? '<b>Unfilled</b>' : `Held by <b>${esc(r.holder.name)}</b>`}</div>
+              <div class="tagrow">${blocked
+                ? '<span class="tag">You already picked a shift this day</span>'
+                : planBadge(r.best)}</div>
+            </div>
+          </button>
+          <button class="why" data-want="${key}">How it works &rsaquo;</button>
+        </div>`;
+      }
+      h += '</div>';
+    }
+    h += `<button class="btn p" data-step="plan" ${state.picks.size ? '' : 'disabled'}>
+      ${state.picks.size ? `Build the plan (${state.picks.size} shift${state.picks.size > 1 ? 's' : ''})` : 'Select at least one shift'}
+    </button>`;
+    return h;
+  }
+
+  /* ---------- step 3: the assembled plan ---------- */
+  const all = planRequests(s, me, state.avail, state.rules, state.posts);
+  const chosen = all.filter(r => state.picks.has(`${r.day}:${r.code}`))
+                    .sort((a, b) => a.day - b.day);
+  const rec = reconcile(chosen);
+  const sum = summarise(s, rec);
+  const stuck = rec.filter(r => !r.best);
+
+  let h = stepBar('plan') +
+    `<div class="card totals"><div class="tgrid">
+      <div><div class="tnum">${sum.netHours > 0 ? '+' : ''}${sum.netHours}</div>
+        <div class="tlab">net hours</div></div>
+      <div><div class="tnum">${rec.length}</div><div class="tlab">shifts</div></div>
+      <div><div class="tnum">${sum.people.length}</div><div class="tlab">to ask</div></div>
+    </div>
+    <div class="tnote">You pick up ${sum.gained} hrs${sum.givenBack ? `, give back ${sum.givenBack} hrs` : ''}${
+      sum.openFilled ? `, and ${sum.openFilled} unfilled position${sum.openFilled > 1 ? 's get' : ' gets'} covered` : ''}.</div>
+    </div>`;
+
+  if (stuck.length) {
+    h += `<div class="card urg"><div class="plan">
+      <div class="cname">${stuck.length} shift${stuck.length > 1 ? 's have' : ' has'} no workable plan</div>
+      <div class="plandet">${stuck.map(r =>
+        `${s.dateLabel(r.day)} ${esc(r.code)} &mdash; ${esc(r.conflictReason || 'no workable plan')}`
+      ).join('<br>')}</div>
+    </div></div>`;
+  }
+
+  h += `<div class="eyebrow"><span>Who to ask, and what they get</span></div>`;
+
+  for (const p of sum.people) {
+    h += `<div class="card"><div class="plan">
+      <div class="cname">${esc(p.name)}</div>
+      <div class="reasons" style="margin-top:7px">
+        ${p.gives.map(g => `<div class="rsn"><i>&minus;</i>Gives ${g.to ? esc(g.to) : 'you'} ${s.dateLabel(g.day)} ${esc(g.code)}</div>`).join('')}
+        ${p.takes.map(t => `<div class="rsn ok"><i>+</i>Takes ${
+          t.from === 'open' ? 'the open' : t.from === 'you' ? 'your' : esc(t.from) + '\u2019s'
+        } ${s.dateLabel(t.day)} ${esc(t.code)}</div>`).join('')}
+        ${p.pto ? `<div class="rsn cost"><i>$</i>Uses ${p.pto} hrs of PTO</div>` : ''}
+      </div>
+    </div></div>`;
+  }
+
+  const openOnly = rec.filter(r => r.best && r.best.kind === 'open');
+  if (openOnly.length) {
+    h += `<div class="card ok-card"><div class="plan">
+      <div class="cname">&#10003; Nobody to ask for ${openOnly.length} of these</div>
+      <div class="plandet">${openOnly.map(r => `${s.dateLabel(r.day)} ${r.code}`).join(', ')}
+        ${openOnly.length > 1 ? 'are' : 'is'} unfilled. Manager approval only.</div>
+    </div></div>`;
+  }
+
+  h += `<button class="btn p" data-act="copyplan">Copy the plan as text</button>
+    <button class="btn o" data-step="browse">Change what you picked</button>
+    <div class="disc">Nothing here is agreed. Every swap needs the people involved to say yes and
+      your manager to approve it.</div>`;
+  return h;
+}
+
+function planText() {
+  const s = state.sched, me = s.person(state.me);
+  const all = planRequests(s, me, state.avail, state.rules, state.posts);
+  const rec = reconcile(all.filter(r => state.picks.has(`${r.day}:${r.code}`))
+                           .sort((a, b) => a.day - b.day));
+  const sum = summarise(s, rec);
+  const L = [];
+  L.push(`Shift request \u2014 ${s.dateLabel(0)} to ${s.dateLabel(s.n - 1)}`);
+  L.push('');
+  for (const r of rec) {
+    if (!r.best) { L.push(`${s.dateLabel(r.day)} ${r.code} \u2014 no workable plan`); continue; }
+    if (r.best.kind === 'open') { L.push(`${s.dateLabel(r.day)} ${r.code} \u2014 unfilled, manager approval only`); continue; }
+    if (r.best.kind === 'relay') {
+      L.push(`${s.dateLabel(r.day)} ${r.code} \u2014 from ${r.holder.name}, who covers ${r.best.via.person}\u2019s ${s.dateLabel(r.best.via.day)} ${r.best.via.code} instead`);
+    } else {
+      L.push(`${s.dateLabel(r.day)} ${r.code} \u2014 from ${r.holder.name}: ${r.best.title.replace(/^They /, '')}`);
+    }
+  }
+  L.push('');
+  L.push(`Net for me: ${sum.netHours > 0 ? '+' : ''}${sum.netHours} hrs across ${rec.length} shifts.`);
+  if (sum.openFilled) L.push(`${sum.openFilled} unfilled position${sum.openFilled > 1 ? 's get' : ' gets'} covered.`);
+  L.push('No required position goes uncovered under this plan.');
+  return L.join('\n');
+}
+
+function openWant(dayIdx, code) {
+  const s = state.sched, me = s.person(state.me);
+  const d = s.dates[dayIdx], pos = s.position(code);
+  const opts = requestableOn(s, me, dayIdx, state.rules);
+  const opt = opts.find(o => o.code === code);
+  const holder = opt ? opt.holder : null;
+  const plans = makeWholePlans(s, me, dayIdx, code, holder, state.rules, state.posts);
+
+  $('shead').innerHTML = `<h2>${DOWFULL[d.dow] || d.dow}, ${MONTH[d.m]} ${d.d}</h2>
+    <p><span class="mono">${esc(code)}${pos ? ' \u00b7 ' + esc(pos.time) : ''}</span> &mdash;
+    ${holder ? 'currently ' + esc(holder.name) : 'unfilled'}</p>`;
+
+  let h = '';
+  if (holder) {
+    const lost = s.hoursOf(code);
+    h += `<div class="card"><div class="safe-in">
+      <div class="lbl">${esc(holder.name)} would lose ${lost} hrs</div>
+      <div class="hint">They hold a benefited line, so those hours are income they were counting on.
+        Pick the option that suits them, not the one that suits you &mdash; and let them choose.</div>
+    </div></div>
+    <div class="eyebrow"><span>How they come out whole</span></div>`;
+
+    plans.slice(0, 6).forEach((p, n) => {
+      const bad = p.flags.some(f => f.severity === 'hard');
+      h += `<div class="card${bad ? ' urg' : ''}"><div class="plan">
+        <div class="planhead">
+          <span class="rank ${n === 0 && !bad ? 'top' : bad ? 'warn' : ''}">${n + 1}</span>
+          <div><div class="cname">${esc(p.title)}</div>
+            <div class="planmeta mono">${
+              p.kind === 'pto' ? `\u2212${p.ptoHours} hrs PTO balance`
+              : p.ownerHours === 0 ? 'hours unchanged'
+              : `${p.ownerHours > 0 ? '+' : ''}${p.ownerHours} hrs`
+            }${p.coverageDelta > 0 ? ' \u00b7 fills an open shift'
+              : p.kind === 'relay' ? ' \u00b7 3 people' : ' \u00b7 coverage held'}</div>
+          </div></div>
+        <div class="plandet">${esc(p.detail)}</div>
+        ${p.flags.length ? `<div class="reasons">${p.flags.map(f =>
+          `<div class="rsn ${f.severity === 'hard' ? 'bad' : f.severity === 'cost' ? 'cost' : 'warn'}">
+            <i>${f.severity === 'cost' ? '$' : '!'}</i>${esc(f.text)}</div>`).join('')}</div>` : ''}
+      </div></div>`;
+    });
+  } else {
+    h += `<div class="card ok-card"><div class="safe-in">
+      <div class="lbl">&#10003; Nobody holds this shift</div>
+      <div class="hint">It is an unfilled required position. No one loses hours and nothing needs
+        trading &mdash; this only needs your manager to say yes.</div>
+    </div></div>`;
+  }
+
+  h += `<button class="btn p" data-ask="${holder ? esc(holder.name) : 'your manager'}">
+      ${holder ? 'Ask ' + esc(holder.name.split(' ')[0]) : 'Ask your manager'}</button>
+    <div class="disc">Nothing is agreed until they say yes and your manager approves it.</div>`;
+  $('sbody').innerHTML = h;
+  openSheet();
+}
+
 function render() {
   const s = state.sched;
   $('range').textContent = `${s.dateLabel(0)} \u2013 ${s.dateLabel(s.n - 1)}`;
@@ -332,6 +610,7 @@ function render() {
     state.tab === 'board' ? viewBoard() :
     state.tab === 'post'  ? viewPost()  :
     state.tab === 'mine'  ? viewMine()  :
+    state.tab === 'want'  ? viewWant()  :
     state.tab === 'gaps'  ? viewGaps()  : viewSetup();
   $('main').innerHTML = (state.tab === 'setup' ? '' : demoBanner()) + body;
   document.querySelectorAll('.tab').forEach(t => t.setAttribute('aria-selected', t.dataset.tab === state.tab));
@@ -428,6 +707,17 @@ function wireDrop() {
   file.addEventListener('change', () => { if (file.files[0]) handleFile(file.files[0]); });
 }
 
+// If the sheet records availability by cell colour, start from it rather than
+// making the person re-enter what their manager already wrote down.
+function declaredAvailForPrefill(sched, person) {
+  const declared = person && sched.declaredAvailable(person);
+  if (!declared) return null;
+  return new Set(declared.filter(i => {
+    const v = sched.cell(person, i);
+    return !v || v === 'x';
+  }));
+}
+
 async function handleFile(f) {
   $('parseErr').innerHTML = '';
   try {
@@ -438,6 +728,10 @@ async function handleFile(f) {
     state.sched = new Schedule(model);
     state.sched.raw = model;
     state.posts = [];
+    state.picks = new Set();
+    const meRow = model.staff.find(p => p.name === state.me) || model.staff[0];
+    const prefill = declaredAvailForPrefill(state.sched, meRow);
+    if (prefill) { state.avail = prefill; saveAvailability(state.avail); }
     state.me = state.sched.staff[0].name;
     fillPicker();
     await save();
@@ -468,8 +762,57 @@ function fillPicker() {
 
 /* ---------- events ---------- */
 document.addEventListener('click', async e => {
-  const t = e.target.closest('[data-open],[data-post],[data-take],[data-ask],[data-undo],[data-kind],[data-tab],[data-gap],[data-rule],[data-act],#submitPost');
+  const t = e.target.closest('[data-open],[data-post],[data-take],[data-ask],[data-undo],[data-kind],[data-tab],[data-gap],[data-rule],[data-act],[data-avail],[data-want],[data-pick],[data-step],[data-week],#submitPost');
   if (!t) return;
+
+  if (t.dataset.avail !== undefined && t.hasAttribute('data-avail')) {
+    const i = +t.dataset.avail;
+    if (state.avail.has(i)) state.avail.delete(i); else state.avail.add(i);
+    saveAvailability(state.avail); render(); return;
+  }
+  if (t.dataset.want) {
+    const [d, c] = t.dataset.want.split(':');
+    openWant(+d, c); return;
+  }
+  if (t.dataset.pick) {
+    if (state.picks.has(t.dataset.pick)) state.picks.delete(t.dataset.pick);
+    else state.picks.add(t.dataset.pick);
+    render(); return;
+  }
+  if (t.dataset.step) { state.wantMode = t.dataset.step; state.tab = 'want'; render(); return; }
+  if (t.dataset.week !== undefined && t.hasAttribute('data-week')) {
+    const me2 = state.sched.person(state.me);
+    const w = +t.dataset.week;
+    for (let i = w; i < Math.min(w + 7, state.sched.n); i++) {
+      const v = state.sched.cell(me2, i);
+      if (!v || v === 'x') state.avail.add(i);
+    }
+    saveAvailability(state.avail); render(); return;
+  }
+  if (t.dataset.act === 'allfree') {
+    freeDays(state.sched, state.sched.person(state.me)).forEach(i => state.avail.add(i));
+    saveAvailability(state.avail); render(); return;
+  }
+  if (t.dataset.act === 'weekends') {
+    const me2 = state.sched.person(state.me);
+    freeDays(state.sched, me2).forEach(i => {
+      const d = state.sched.dates[i].dow;
+      if (d === 'Sa' || d === 'Su') state.avail.add(i);
+    });
+    saveAvailability(state.avail); render(); return;
+  }
+  if (t.dataset.act === 'clearavail') {
+    state.avail.clear(); state.picks.clear();
+    saveAvailability(state.avail); render(); return;
+  }
+  if (t.dataset.act === 'copyplan') {
+    const txt = planText();
+    if (navigator.clipboard) navigator.clipboard.writeText(txt).then(
+      () => toast('Copied \u2014 paste it into a message'),
+      () => toast('Couldn\u2019t copy on this browser'));
+    else toast('Copying isn\u2019t supported on this browser');
+    return;
+  }
 
   if (t.dataset.tab)  { state.tab = t.dataset.tab; closeSheet(); render(); return; }
   if (t.dataset.open) {
@@ -536,7 +879,16 @@ document.addEventListener('change', async e => {
 
 $('scrim').addEventListener('click', closeSheet);
 document.addEventListener('keydown', e => { if (e.key === 'Escape') closeSheet(); });
-$('me').addEventListener('change', e => { state.me = e.target.value; closeSheet(); render(); });
+$('me').addEventListener('change', e => {
+  state.me = e.target.value;
+  state.picks = new Set();
+  const person = state.sched.person(state.me);
+  const prefill = declaredAvailForPrefill(state.sched, person);
+  state.avail = prefill || new Set();
+  saveAvailability(state.avail);
+  state.wantMode = 'days';
+  closeSheet(); render();
+});
 
 /* ---------- boot ---------- */
 function seedPosts(s) {
@@ -559,6 +911,7 @@ function seedPosts(s) {
 
 (async function boot() {
   await load();
+  state.avail = loadAvailability();
   if (state.savedModel) {
     try {
       state.sched = new Schedule(state.savedModel);

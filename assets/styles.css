@@ -221,3 +221,70 @@ nav button[aria-current="true"]{color:var(--blue)}
 .fmt .hint{font-size:12.5px;color:var(--muted);line-height:1.5}
 .fmt .hint b{color:var(--ink)}
 .err b{display:inline-block;margin-bottom:2px}
+
+/* ---------- availability picker ---------- */
+.cell.av{cursor:pointer;transition:background .12s,border-color .12s}
+.cell.av .cc{min-height:14px;color:var(--blue);font-size:13px}
+.cell.av.picked{background:var(--blue-soft);border-color:var(--blue)}
+.cell.av.busy{background:var(--paper);opacity:.5;cursor:default}
+.cell.av.busy .cc{color:var(--muted);font-size:11px}
+.cell.av:not(.busy):active{transform:scale(.96)}
+
+/* ---------- want results ---------- */
+.daygroup{margin-bottom:16px}
+.dayhead{font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.08em;
+  text-transform:uppercase;color:var(--ink);font-weight:600;margin:0 4px 7px;
+  padding-bottom:5px;border-bottom:1px solid var(--rule)}
+.daygroup .ctop{padding:11px 13px}
+.eyebrow button.tag{cursor:pointer}
+
+/* ---------- make-whole plans ---------- */
+.plan{padding:12px 13px}
+.planhead{display:flex;gap:10px;align-items:flex-start}
+.planmeta{font-size:11px;color:var(--muted);margin-top:2px}
+.plandet{font-size:13px;color:var(--muted);line-height:1.5;margin-top:8px}
+.plan .reasons{margin-top:9px}
+
+/* six-item nav gets tighter labels */
+nav button .lb{font-size:10px}
+@media(max-width:360px){nav button .lb{font-size:9px}}
+
+/* ---------- three-step bar ---------- */
+.steps-bar{display:flex;gap:5px;margin:0 0 12px}
+.stepb{flex:1;display:flex;align-items:center;justify-content:center;gap:5px;
+  padding:8px 4px;border:1px solid var(--rule);background:var(--card);border-radius:8px;
+  font-size:11.5px;font-weight:500;color:var(--muted)}
+.stepb.on{background:var(--ink);color:#fff;border-color:var(--ink)}
+.sb-n{font-family:'IBM Plex Mono',monospace;font-size:9px;width:15px;height:15px;border-radius:50%;
+  background:var(--paper);color:var(--muted);display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.stepb.on .sb-n{background:var(--mark);color:var(--ink)}
+
+.bulk{display:flex;gap:6px;margin-bottom:6px}
+.bulk .btn{flex:1;padding:8px 4px;font-size:12px}
+.minib{font-family:'IBM Plex Mono',monospace;font-size:9.5px;letter-spacing:.04em;
+  color:var(--blue);background:var(--blue-soft);border:1px solid #C6D3F8;
+  border-radius:4px;padding:2px 6px;text-transform:none}
+
+/* ---------- selectable shift cards ---------- */
+.pickcard{transition:border-color .12s,background .12s}
+.pickcard.picked{border-color:var(--blue);background:var(--blue-soft)}
+.pickcard .ctop{padding:11px 13px;align-items:flex-start}
+.tick{flex-shrink:0;width:21px;height:21px;border-radius:6px;border:1.5px solid var(--rule);
+  background:var(--card);display:flex;align-items:center;justify-content:center;
+  font-size:13px;font-weight:700;color:#fff;margin-top:2px}
+.pickcard.picked .tick{background:var(--blue);border-color:var(--blue)}
+.why{width:100%;text-align:left;padding:8px 13px;border-top:1px solid var(--rule);
+  font-size:12px;color:var(--blue);font-weight:500;background:rgba(255,255,255,.5)}
+
+/* ---------- totals ---------- */
+.totals{padding:14px 13px 12px}
+.tgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;text-align:center}
+.tnum{font-size:24px;font-weight:600;letter-spacing:-.02em;line-height:1.1}
+.tlab{font-family:'IBM Plex Mono',monospace;font-size:9.5px;letter-spacing:.1em;
+  text-transform:uppercase;color:var(--muted);margin-top:2px}
+.tnote{font-size:12.5px;color:var(--muted);line-height:1.5;margin-top:11px;
+  padding-top:10px;border-top:1px solid var(--rule)}
+.pickcard.blocked{opacity:.5}
+.pickcard.blocked .ctop{cursor:default}
+.cell.av.marked{border-style:dashed;border-color:var(--blue)}
+.cell.av.marked .cc::after{content:'\00b7';color:var(--blue)}

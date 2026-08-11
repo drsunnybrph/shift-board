@@ -69,6 +69,11 @@ export class Schedule {
   }
   worksOn(person, i) { return this.isWork(this.cell(person, i)); }
 
+  /** Days this person marked available in the source sheet, if it encoded any. */
+  declaredAvailable(person) {
+    return Array.isArray(person.available) ? person.available : null;
+  }
+
   /** free | off | leave | working */
   availability(person, i) {
     const v = this.cell(person, i);
@@ -261,6 +266,8 @@ export function findCoverage(sched, dayIdx, code, ownerName, rules = DEFAULT_RUL
     if (p.name === ownerName) continue;
     const av = sched.availability(p, dayIdx);
     if (av !== 'free' && av !== 'off') continue;
+    const declared = sched.declaredAvailable(p);
+    if (declared && !declared.includes(dayIdx)) continue;   // sheet says not available
     if (sched.totalShifts(p) === 0) continue;      // not working this period at all
 
     const { flags, weeklyHours, run, turnaround } = flagsFor(sched, p, dayIdx, code, rules);

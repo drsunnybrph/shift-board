@@ -1,0 +1,14 @@
+{
+  "name": "Shift Board",
+  "short_name": "Shifts",
+  "description": "Post a shift you can't work and see who can actually cover it.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#EDF0F5",
+  "theme_color": "#141821",
+  "icons": [
+    { "src": "assets/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

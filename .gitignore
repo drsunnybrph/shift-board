@@ -1,0 +1,9 @@
+# Never commit real schedules
+*.xlsx
+*.xls
+*.xlsm
+schedules/
+private/
+.DS_Store
+node_modules/
+.claude/

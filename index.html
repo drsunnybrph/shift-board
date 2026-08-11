@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="A shift swap board for hospital departments. Post a shift you can't work, see who can actually cover it.">
+<meta name="color-scheme" content="light">
+<title>Shift Board</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="assets/styles.css">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="assets/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="assets/icon.svg">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Shifts">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#141821">
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js" defer></script>
+</head>
+<body>
+
+<header>
+  <div class="hrow">
+    <div>
+      <div class="brand">Shift Board</div>
+      <h1>Coverage</h1>
+      <div class="sub" id="range"></div>
+    </div>
+    <div class="whoami">
+      <label for="me">Signed in as</label>
+      <select id="me"></select>
+    </div>
+  </div>
+  <div class="tabs" role="tablist">
+    <button class="tab" role="tab" data-tab="board" aria-selected="true">Board <span class="ct" id="ctBoard">0</span></button>
+    <button class="tab" role="tab" data-tab="post"  aria-selected="false">Post</button>
+    <button class="tab" role="tab" data-tab="mine"  aria-selected="false">Mine</button>
+    <button class="tab" role="tab" data-tab="gaps"  aria-selected="false">Gaps</button>
+  </div>
+</header>
+
+<main class="wrap" id="main"></main>
+
+<nav>
+  <div class="ninner">
+    <button data-tab="board" aria-current="true"><div class="ic">&#9634;</div><div class="lb">Board</div></button>
+    <button data-tab="post"  aria-current="false"><div class="ic">&#43;</div><div class="lb">Post</div></button>
+    <button data-tab="mine"  aria-current="false"><div class="ic">&#9673;</div><div class="lb">Mine</div></button>
+    <button data-tab="gaps"  aria-current="false"><div class="ic">&#9888;</div><div class="lb">Gaps</div></button>
+    <button data-tab="setup" aria-current="false"><div class="ic">&#9881;</div><div class="lb">Setup</div></button>
+  </div>
+</nav>
+
+<div class="scrim" id="scrim"></div>
+<div class="sheet" id="sheet" role="dialog" aria-modal="true" aria-label="Details">
+  <div class="grab"></div>
+  <div class="shead" id="shead"></div>
+  <div class="sbody" id="sbody"></div>
+</div>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<script type="module" src="assets/app.js"></script>
+</body>
+</html>

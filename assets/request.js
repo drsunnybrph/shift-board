@@ -58,7 +58,7 @@ export function summarise(sched, requests) {
     if (p.kind === 'open') { openFilled++; continue; }
     if (!r.holder) continue;
 
-    const e = people.get(r.holder.name) || { name: r.holder.name, takes: [], gives: [], pto: 0 };
+    const e = people.get(r.holder.name) || { name: r.holder.name, takes: [], gives: [], pto: 0, wantsIt: false };
     e.gives.push({ day: r.day, code: r.code });
     if (p.kind === 'swap') {
       e.takes.push({ day: p.giveBack.day, code: p.giveBack.code, from: 'you' });
@@ -68,8 +68,18 @@ export function summarise(sched, requests) {
       openFilled++;
     } else if (p.kind === 'relay') {
       e.takes.push({ day: p.via.day, code: p.via.code, from: p.via.person });
-      const t = people.get(p.via.person) || { name: p.via.person, takes: [], gives: [], pto: 0 };
+      const t = people.get(p.via.person) || { name: p.via.person, takes: [], gives: [], pto: 0, wantsIt: false };
       t.gives.push({ day: p.via.day, code: p.via.code, to: r.holder.name });
+      /* Marked as wanting the time off, so the day they hand over is a PTO day
+       * they asked for. Without this the relay reads as bare hours taken off
+       * them everywhere outside the plan card \u2014 including in the message
+       * you actually send, which is the one place it matters most. */
+      if (p.thirdTakesPto) {
+        const h = sched.hoursOf(p.via.code);
+        t.pto += h;
+        t.wantsIt = true;
+        ptoSpent += h;
+      }
       people.set(p.via.person, t);
     } else if (p.kind === 'pto') {
       e.pto += p.ptoHours;
@@ -433,7 +443,7 @@ export function makeWholePlans(sched, me, dayIdx, code, holder, rules = DEFAULT_
       thirdTakesPto: askedFor,
       ownerHours: delta,
       coverageDelta: 0,
-      via: { day: j, code: tCode, person: third.name, posted: wants },
+      via: { day: j, code: tCode, person: third.name, posted: posted.has(`${third.name}|${j}`), takesPto: askedFor },
       flags: relayFlags,
       clean: wants && flags.length === 0 && delta >= 0,
       score: (wants ? 930 : 820) - Math.abs(delta) * 8 - flagCost(relayFlags)
@@ -502,12 +512,24 @@ export function planKey(p) {
 export function reconcile(requests, chosen = new Map()) {
   const spent = new Set();      // give-back shifts already promised
   const dayTaken = new Set();   // days the requester is now working
+  const out = requests.map(r => ({ ...r }));
 
-  return requests.map(r => {
+  /* Requests you chose a plan for are settled before the rest, so a deliberate
+   * choice reserves its give-back ahead of any plan the tool merely ranked
+   * first. Walking in list order instead would let an earlier request's top
+   * pick spend the very shift a later request was explicitly chosen for, and
+   * report the choice as `chosenMissing` \u2014 the ranking beating the decision,
+   * which is the thing this is meant to prevent. Sorting is stable, so within
+   * each group the caller's order still decides a genuine collision. */
+  const order = [...requests.keys()].sort((a, b) =>
+    (chosen.has(`${requests[b].day}:${requests[b].code}`) ? 1 : 0) -
+    (chosen.has(`${requests[a].day}:${requests[a].code}`) ? 1 : 0));
+
+  const settle = r => {
     // You can only be in one place at a time. If an earlier request already
     // claimed this day, everything after it on the same day is unworkable.
     if (dayTaken.has(r.day)) {
-      return { ...r, plans: [], best: null, conflicted: true,
+      return { plans: [], best: null, chosenByUser: false, chosenMissing: false, conflicted: true,
                conflictReason: 'You already picked up a different shift that day.' };
     }
 
@@ -534,11 +556,14 @@ export function reconcile(requests, chosen = new Map()) {
       if (best.kind === 'swap')  spent.add(best.giveBack.day);
       if (best.kind === 'relay') spent.add(`${best.via.person}|${best.via.day}`);
     }
-    return { ...r, plans: viable, best,
+    return { plans: viable, best,
              chosenByUser: !!picked,
              chosenMissing: !!want && !picked,
              conflicted: viable.length < r.plans.length,
              conflictReason: viable.length ? null
                : 'The give-back that would have worked is already committed elsewhere.' };
-  });
+  };
+
+  for (const ix of order) Object.assign(out[ix], settle(requests[ix]));
+  return out;
 }

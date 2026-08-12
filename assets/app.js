@@ -363,9 +363,11 @@ function planBadge(p) {
   if (p.kind === 'open')   return '<span class="tag g">Unfilled &mdash; nobody loses hours</span>';
   if (p.kind === 'swap')   return '<span class="tag g">Even trade available</span>';
   if (p.kind === 'pickup') return '<span class="tag g">They pick up an open shift</span>';
-  if (p.kind === 'relay')  return p.via && p.via.posted
-    ? `<span class="tag g">${esc(p.third)} covers a posted shift</span>`
-    : `<span class="tag b">Three-way via ${esc(p.third)}</span>`;
+  if (p.kind === 'relay') {
+    if (p.via && p.via.posted)   return `<span class="tag g">${esc(p.third)} covers a posted shift</span>`;
+    if (p.via && p.via.takesPto) return `<span class="tag g">${esc(p.third)} takes the PTO day</span>`;
+    return `<span class="tag b">Three-way via ${esc(p.third)}</span>`;
+  }
   if (p.kind === 'pto')    return '<span class="tag a">Costs them PTO</span>';
   return '';
 }
@@ -523,7 +525,9 @@ function viewWant() {
         ${p.takes.map(t => `<div class="rsn ok"><i>+</i>Takes ${
           t.from === 'open' ? 'the open' : t.from === 'you' ? 'your' : esc(t.from) + '\u2019s'
         } ${s.dateLabel(t.day)} ${esc(t.code)}</div>`).join('')}
-        ${p.pto ? `<div class="rsn cost"><i>$</i>Uses ${p.pto} hrs of PTO</div>` : ''}
+        ${p.pto ? (p.wantsIt
+          ? `<div class="rsn ok"><i>&#10003;</i>Takes ${p.pto} hrs of PTO &mdash; the time off they wanted</div>`
+          : `<div class="rsn cost"><i>$</i>Uses ${p.pto} hrs of PTO</div>`) : ''}
       </div>
     </div></div>`;
   }
@@ -578,7 +582,9 @@ function planText(style = 'summary') {
       if (fromMe.length)     bits.push(`you'd pick up my ${fromMe.map(t => `${s.dateLabel(t.day)} ${t.code}`).join(' and ')}`);
       if (fromOthers.length) bits.push(`you'd cover ${fromOthers.map(t => `${firstName(t.from)}'s ${s.dateLabel(t.day)} ${t.code}`).join(' and ')}`);
       if (fromOpen.length)   bits.push(`you'd pick up the open ${fromOpen.map(t => `${s.dateLabel(t.day)} ${t.code}`).join(' and ')}`);
-      if (p.pto)             bits.push(`you'd use ${p.pto} hrs of PTO`);
+      if (p.pto)             bits.push(p.wantsIt
+        ? `you'd take ${p.pto} hrs of PTO \u2014 the time off you were after`
+        : `you'd use ${p.pto} hrs of PTO`);
 
       const net = p.takes.reduce((t, x) => t + s.hoursOf(x.code), 0)
                 - p.gives.reduce((t, x) => t + s.hoursOf(x.code), 0);

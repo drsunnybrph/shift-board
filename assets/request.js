@@ -130,6 +130,17 @@ function isRequired(sched, i, code) {
   return pat ? pat[i] : false;
 }
 
+/** Cheap pre-filter: does this person work at all in this period? */
+const _spareCache = new WeakMap();
+function thirdHasSpareShift(sched, person) {
+  let m = _spareCache.get(sched);
+  if (!m) { m = new Map(); _spareCache.set(sched, m); }
+  if (m.has(person.name)) return m.get(person.name);
+  const v = sched.totalShifts(person) > 0;
+  m.set(person.name, v);
+  return v;
+}
+
 const _patternCache = new Map();
 function inferredPattern(sched, code) {
   if (_patternCache.has(code)) return _patternCache.get(code);
@@ -144,6 +155,32 @@ function inferredPattern(sched, code) {
   const pat = count < 3 ? null : filled;
   _patternCache.set(code, pat);
   return pat;
+}
+
+/**
+ * Does this set of moves leave a required position with nobody on it?
+ *
+ * The obvious version rescans the whole schedule, which is O(days x positions
+ * x staff) and sits inside loops that run thousands of times per request. But
+ * a move can only endanger the position it vacated, so only those cells need
+ * checking. This is the difference between a request taking half a minute and
+ * taking no time at all.
+ */
+export function createsGap(sched, moves = []) {
+  const overlay = new Map();
+  for (const m of moves) overlay.set(`${m.person.name}|${m.day}`, m.code);
+  const cellOf = (p, i) => {
+    const k = `${p.name}|${i}`;
+    return overlay.has(k) ? overlay.get(k) : sched.cell(p, i);
+  };
+  for (const m of moves) {
+    const vacated = sched.cell(m.person, m.day);
+    if (!vacated || vacated === m.code) continue;
+    if (!sched.isWork(vacated)) continue;
+    if (!isRequired(sched, m.day, vacated)) continue;
+    if (!sched.staff.some(p => cellOf(p, m.day) === vacated)) return true;
+  }
+  return false;
 }
 
 /**
@@ -171,8 +208,12 @@ export function gapsAfter(sched, moves = []) {
 }
 
 /** Required positions nobody is assigned to right now. */
+const _openCache = new WeakMap();
 export function openShifts(sched) {
-  return gapsAfter(sched, []);
+  if (_openCache.has(sched)) return _openCache.get(sched);
+  const v = gapsAfter(sched, []);
+  _openCache.set(sched, v);
+  return v;
 }
 
 /* ---------- what could I ask for? ---------- */
@@ -282,8 +323,7 @@ export function makeWholePlans(sched, me, dayIdx, code, holder, rules = DEFAULT_
     const moves = [...baseMoves,
       { person: me,     day: j, code: null },
       { person: holder, day: j, code: mineCode }];
-    const gaps = gapsAfter(sched, moves);
-    if (gaps.length > openShifts(sched).length) continue;   // would create a gap
+    if (createsGap(sched, moves)) continue;
 
     const delta = HOURS(sched, mineCode) - lost;
     plans.push({
@@ -336,55 +376,68 @@ export function makeWholePlans(sched, me, dayIdx, code, holder, rules = DEFAULT_
   const posted = new Set(
     posts.filter(p => !p.takenBy).map(p => `${p.by}|${p.idx}`));
 
+  /* Candidates are gathered before they're scored, so shifts already posted on
+   * the board are always considered first. Capping by discovery order instead
+   * would cut off the best answers purely because they sat lower in the sheet. */
+  const relayCandidates = [];
   for (const third of sched.staff) {
     if (third.name === holder.name || third.name === me.name) continue;
-
+    if (!thirdHasSpareShift(sched, third)) continue;
     for (let j = 0; j < sched.n; j++) {
+      if (j === dayIdx) continue;
       const tCode = sched.cell(third, j);
       if (!sched.isWork(tCode)) continue;
-      if (j === dayIdx) continue;
-
       if (!canWork(sched, holder, j)) continue;
-
-      const { flags } = flagsFor(sched, holder, j, tCode, rules);
-      if (flags.some(f => f.severity === 'hard')) continue;
-
-      const moves = [...baseMoves,
-        { person: third,  day: j, code: null },
-        { person: holder, day: j, code: tCode }];
-      if (gapsAfter(sched, moves).length > openShifts(sched).length) continue;
-
-      const wants = posted.has(`${third.name}|${j}`);
-      const delta = HOURS(sched, tCode) - lost;
-      const relayFlags = wants ? flags : [...flags, {
-        severity: 'note', key: 'third-party',
-        text: `${third.name} would lose ${HOURS(sched, tCode)} hrs \u2014 only works if they want the time off`
-      }];
-
-      plans.push({
-        kind: 'relay',
-        third: third.name,
-        title: wants
-          ? `${holder.name} covers ${third.name}\u2019s ${sched.dateLabel(j)} ${tCode}`
-          : `${holder.name} takes ${third.name}\u2019s ${sched.dateLabel(j)} ${tCode}`,
-        detail: wants
-          ? `${third.name} already put that shift on the board, so this settles two problems at once.`
-          : `Makes ${holder.name} whole without touching your shifts \u2014 but it moves the lost hours onto ${third.name}, so they have to want it.`,
-        ownerHours: delta,
-        coverageDelta: 0,
-        via: { day: j, code: tCode, person: third.name, posted: wants },
-        flags: relayFlags,
-        clean: wants && flags.length === 0 && delta >= 0,
-        score: (wants ? 930 : 820) - Math.abs(delta) * 8 - flagCost(relayFlags)
-      });
+      relayCandidates.push({ third, j, tCode, wants: posted.has(`${third.name}|${j}`) });
     }
+  }
+  /* Ordering has to reflect plan quality, because the cap below is a hard cut.
+   * Sorting by calendar distance alone would let a nearer but worse candidate
+   * push out a clean one purely because it sits closer on the sheet. So:
+   * posted shifts first, then the smallest change to the holder's hours, and
+   * only then distance as a readability tiebreak. */
+  const lostHours = lost;
+  relayCandidates.sort((a, b) =>
+    (b.wants - a.wants) ||
+    (Math.abs(HOURS(sched, a.tCode) - lostHours) - Math.abs(HOURS(sched, b.tCode) - lostHours)) ||
+    (Math.abs(a.j - dayIdx) - Math.abs(b.j - dayIdx)));
+
+  for (const { third, j, tCode, wants } of relayCandidates.slice(0, 30)) {
+    const { flags } = flagsFor(sched, holder, j, tCode, rules);
+    if (flags.some(f => f.severity === 'hard')) continue;
+
+    const moves = [...baseMoves,
+      { person: third,  day: j, code: null },
+      { person: holder, day: j, code: tCode }];
+    if (createsGap(sched, moves)) continue;
+
+    const delta = HOURS(sched, tCode) - lost;
+    const relayFlags = wants ? flags : [...flags, {
+      severity: 'note', key: 'third-party',
+      text: `${third.name} would lose ${HOURS(sched, tCode)} hrs \u2014 only works if they want the time off`
+    }];
+
+    plans.push({
+      kind: 'relay',
+      third: third.name,
+      title: wants
+        ? `${holder.name} covers ${third.name}\u2019s ${sched.dateLabel(j)} ${tCode}`
+        : `${holder.name} takes ${third.name}\u2019s ${sched.dateLabel(j)} ${tCode}`,
+      detail: wants
+        ? `${third.name} already put that shift on the board, so this settles two problems at once.`
+        : `Makes ${holder.name} whole without touching your shifts \u2014 but it moves the lost hours onto ${third.name}, so they have to want it.`,
+      ownerHours: delta,
+      coverageDelta: 0,
+      via: { day: j, code: tCode, person: third.name, posted: wants },
+      flags: relayFlags,
+      clean: wants && flags.length === 0 && delta >= 0,
+      score: (wants ? 930 : 820) - Math.abs(delta) * 8 - flagCost(relayFlags)
+    });
   }
 
   /* --- Plan D: holder takes PTO --- */
   {
-    const moves = baseMoves;
-    const gaps = gapsAfter(sched, moves);
-    const coverageOk = gaps.length <= openShifts(sched).length;
+    const coverageOk = !createsGap(sched, baseMoves);
     plans.push({
       kind: 'pto',
       title: 'They take PTO for the day',

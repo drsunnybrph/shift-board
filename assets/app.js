@@ -336,6 +336,25 @@ function demoBanner() {
    "I want this shift" — the per diem direction
    ============================================================ */
 
+/* Every tap re-renders, and the planner is the expensive part of a render.
+   Nothing about the plans changes when you merely select a card, so the result
+   is cached against the inputs that actually affect it. */
+let _planCache = { key: null, value: null };
+function cachedPlans() {
+  const s = state.sched, me = s.person(state.me);
+  if (!me) return [];
+  const key = [
+    state.me,
+    [...state.avail].sort((a, b) => a - b).join(','),
+    state.posts.filter(p => !p.takenBy).map(p => `${p.by}:${p.idx}`).join('|'),
+    JSON.stringify(state.rules)
+  ].join('##');
+  if (_planCache.key === key) return _planCache.value;
+  _planCache = { key, value: planRequests(s, me, state.avail, state.rules, state.posts) };
+  return _planCache.value;
+}
+function invalidatePlans() { _planCache = { key: null, value: null }; }
+
 function planBadge(p) {
   if (!p) return '<span class="tag u">No workable plan</span>';
   if (p.kind === 'open')   return '<span class="tag g">Unfilled &mdash; nobody loses hours</span>';
@@ -416,7 +435,7 @@ function viewWant() {
 
   /* ---------- step 2: pick shifts ---------- */
   if (state.wantMode === 'browse') {
-    const all = planRequests(s, me, state.avail, state.rules, state.posts);
+    const all = cachedPlans();
     if (!all.length) {
       return stepBar('browse') +
         `<div class="empty"><div class="big">Nothing available on those days</div>
@@ -464,7 +483,7 @@ function viewWant() {
   }
 
   /* ---------- step 3: the assembled plan ---------- */
-  const all = planRequests(s, me, state.avail, state.rules, state.posts);
+  const all = cachedPlans();
   const chosen = all.filter(r => state.picks.has(`${r.day}:${r.code}`))
                     .sort((a, b) => a.day - b.day);
   const rec = reconcile(chosen);
@@ -524,7 +543,7 @@ function viewWant() {
 
 function planText() {
   const s = state.sched, me = s.person(state.me);
-  const all = planRequests(s, me, state.avail, state.rules, state.posts);
+  const all = cachedPlans();
   const rec = reconcile(all.filter(r => state.picks.has(`${r.day}:${r.code}`))
                            .sort((a, b) => a.day - b.day));
   const sum = summarise(s, rec);
@@ -725,6 +744,7 @@ async function handleFile(f) {
     if (!model.positions.length) {
       throw new Error('No shift times found. The sheet needs a legend somewhere pairing each code with its hours, e.g. "ED  1430-0100".');
     }
+    invalidatePlans();
     state.sched = new Schedule(model);
     state.sched.raw = model;
     state.posts = [];
@@ -768,7 +788,7 @@ document.addEventListener('click', async e => {
   if (t.dataset.avail !== undefined && t.hasAttribute('data-avail')) {
     const i = +t.dataset.avail;
     if (state.avail.has(i)) state.avail.delete(i); else state.avail.add(i);
-    saveAvailability(state.avail); render(); return;
+    saveAvailability(state.avail); invalidatePlans(); render(); return;
   }
   if (t.dataset.want) {
     const [d, c] = t.dataset.want.split(':');
@@ -787,11 +807,11 @@ document.addEventListener('click', async e => {
       const v = state.sched.cell(me2, i);
       if (!v || v === 'x') state.avail.add(i);
     }
-    saveAvailability(state.avail); render(); return;
+    saveAvailability(state.avail); invalidatePlans(); render(); return;
   }
   if (t.dataset.act === 'allfree') {
     freeDays(state.sched, state.sched.person(state.me)).forEach(i => state.avail.add(i));
-    saveAvailability(state.avail); render(); return;
+    saveAvailability(state.avail); invalidatePlans(); render(); return;
   }
   if (t.dataset.act === 'weekends') {
     const me2 = state.sched.person(state.me);
@@ -799,11 +819,11 @@ document.addEventListener('click', async e => {
       const d = state.sched.dates[i].dow;
       if (d === 'Sa' || d === 'Su') state.avail.add(i);
     });
-    saveAvailability(state.avail); render(); return;
+    saveAvailability(state.avail); invalidatePlans(); render(); return;
   }
   if (t.dataset.act === 'clearavail') {
     state.avail.clear(); state.picks.clear();
-    saveAvailability(state.avail); render(); return;
+    saveAvailability(state.avail); invalidatePlans(); render(); return;
   }
   if (t.dataset.act === 'copyplan') {
     const txt = planText();
@@ -829,6 +849,7 @@ document.addEventListener('click', async e => {
   if (t.dataset.act === 'pick') { $('file').click(); return; }
   if (t.dataset.act === 'reset') {
     forget();
+    invalidatePlans();
     state.sched = new Schedule(DEMO); state.sched.raw = null;
     state.posts = seedPosts(state.sched);
     state.me = state.sched.staff[0].name;
@@ -837,7 +858,7 @@ document.addEventListener('click', async e => {
   }
   if (t.dataset.rule) {
     const k = t.dataset.rule;
-    state.rules[k] = !state.rules[k];
+    state.rules[k] = !state.rules[k]; invalidatePlans();
     await save(); render(); return;
   }
   if (t.dataset.kind) {
@@ -851,19 +872,19 @@ document.addEventListener('click', async e => {
       id: 'p' + Date.now(), by: state.me, idx: state.pending.idx, code: state.pending.code,
       kind: state.pending.kind, note: $('pnote').value.trim(), takenBy: null
     });
-    await save(); closeSheet(); state.tab = 'board'; render();
+    invalidatePlans(); await save(); closeSheet(); state.tab = 'board'; render();
     toast('Posted \u2014 the board will rank who can cover it');
     return;
   }
   if (t.dataset.take) {
     const p = state.posts.find(x => x.id === t.dataset.take);
-    p.takenBy = state.me; await save(); closeSheet(); render();
+    p.takenBy = state.me; invalidatePlans(); await save(); closeSheet(); render();
     toast('You\u2019ve got it. Manager still has to approve.');
     return;
   }
   if (t.dataset.undo) {
     const p = state.posts.find(x => x.id === t.dataset.undo);
-    p.takenBy = null; await save(); closeSheet(); render();
+    p.takenBy = null; invalidatePlans(); await save(); closeSheet(); render();
     toast('Back on the board');
     return;
   }
@@ -873,7 +894,7 @@ document.addEventListener('click', async e => {
 document.addEventListener('change', async e => {
   if (e.target.dataset?.num) {
     const v = parseFloat(e.target.value);
-    if (Number.isFinite(v)) { state.rules[e.target.dataset.num] = v; await save(); }
+    if (Number.isFinite(v)) { state.rules[e.target.dataset.num] = v; invalidatePlans(); await save(); }
   }
 });
 
@@ -881,6 +902,7 @@ $('scrim').addEventListener('click', closeSheet);
 document.addEventListener('keydown', e => { if (e.key === 'Escape') closeSheet(); });
 $('me').addEventListener('change', e => {
   state.me = e.target.value;
+  invalidatePlans();
   state.picks = new Set();
   const person = state.sched.person(state.me);
   const prefill = declaredAvailForPrefill(state.sched, person);

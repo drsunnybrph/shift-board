@@ -15,6 +15,17 @@
  *    benefited employee real hours. PTO, a shift back, or another open shift
  *    are all valid answers, and which one is right depends on whether they
  *    want the time or the money. The tool ranks them; it does not choose.
+ *
+ * 3. A RANKING IS A SUGGESTION, AND LOSES TO A DECISION. The person using this
+ *    knows things the sheet doesn't — who owes who a favour, who is saving PTO
+ *    for a trip, who would rather not be asked at all. When they pick a plan,
+ *    `reconcile` honours it even where the score disagrees, and reserves its
+ *    give-back ahead of any plan the tool merely preferred.
+ *
+ * The same logic drives `wantsOff`: a set of names the user has marked as
+ * actually wanting time off. Nothing in a schedule grid can tell you that, so
+ * it is declared, and once declared it flips a relay through that person from
+ * a warning into the best answer available.
  */
 
 import { flagsFor, DEFAULT_RULES } from './engine.js';
@@ -58,7 +69,7 @@ export function summarise(sched, requests) {
     if (p.kind === 'open') { openFilled++; continue; }
     if (!r.holder) continue;
 
-    const e = people.get(r.holder.name) || { name: r.holder.name, takes: [], gives: [], pto: 0 };
+    const e = people.get(r.holder.name) || { name: r.holder.name, takes: [], gives: [], pto: 0, wantsIt: false };
     e.gives.push({ day: r.day, code: r.code });
     if (p.kind === 'swap') {
       e.takes.push({ day: p.giveBack.day, code: p.giveBack.code, from: 'you' });
@@ -68,8 +79,16 @@ export function summarise(sched, requests) {
       openFilled++;
     } else if (p.kind === 'relay') {
       e.takes.push({ day: p.via.day, code: p.via.code, from: p.via.person });
-      const t = people.get(p.via.person) || { name: p.via.person, takes: [], gives: [], pto: 0 };
+      const t = people.get(p.via.person) || { name: p.via.person, takes: [], gives: [], pto: 0, wantsIt: false };
       t.gives.push({ day: p.via.day, code: p.via.code, to: r.holder.name });
+      // Marked as wanting the time off, so the day they hand over is a PTO day
+      // they were after — not hours quietly taken off them.
+      if (p.thirdTakesPto) {
+        const h = sched.hoursOf(p.via.code);
+        t.pto += h;
+        t.wantsIt = true;
+        ptoSpent += h;
+      }
       people.set(p.via.person, t);
     } else if (p.kind === 'pto') {
       e.pto += p.ptoHours;
@@ -96,6 +115,19 @@ export function loadAvailability() {
 }
 export function saveAvailability(set) {
   try { localStorage.setItem('shiftboard.avail', JSON.stringify([...set])); } catch {}
+}
+
+/* Who has said they actually want time off. Kept separately from availability
+ * because it is the opposite claim: availability is "I could work this", and
+ * this is "I would rather not, and losing the shift does me a favour". */
+export function loadWantsOff() {
+  try {
+    const raw = localStorage.getItem('shiftboard.wantsoff');
+    return raw ? new Set(JSON.parse(raw)) : new Set();
+  } catch { return new Set(); }
+}
+export function saveWantsOff(set) {
+  try { localStorage.setItem('shiftboard.wantsoff', JSON.stringify([...set])); } catch {}
 }
 
 /* ---------- coverage accounting ---------- */
@@ -285,8 +317,12 @@ function flagCost(flags) {
 /**
  * Ranked plans for taking `code` on `dayIdx` from `holder`.
  * Returns [] when the shift is unfilled — nothing to make whole.
+ *
+ * `wantsOff` is a set of names the user has marked as actually wanting time
+ * off. See rule 3 at the top of this file.
  */
-export function makeWholePlans(sched, me, dayIdx, code, holder, rules = DEFAULT_RULES, posts = []) {
+export function makeWholePlans(sched, me, dayIdx, code, holder, rules = DEFAULT_RULES, posts = [],
+                               wantsOff = new Set()) {
   if (!holder) {
     return [{
       kind: 'open',
@@ -369,9 +405,11 @@ export function makeWholePlans(sched, me, dayIdx, code, holder, rules = DEFAULT_
    * someone else's line rather than yours. This is the shape most real swaps
    * take, because the person with hours to spare is rarely the person asking.
    *
-   * It only works when the third party actually wants to lose those hours, so
-   * a shift already posted on the board is treated as the strong case and
-   * everything else is flagged as needing their agreement first.
+   * It only works when the third party actually wants to lose those hours. Two
+   * things count as knowing that: a shift already posted on the board, and a
+   * person the user has marked as wanting time off. Either one makes this the
+   * strong case; without either, the plan is flagged as needing their
+   * agreement first.
    */
   const posted = new Set(
     posts.filter(p => !p.takenBy).map(p => `${p.by}|${p.idx}`));
@@ -383,26 +421,28 @@ export function makeWholePlans(sched, me, dayIdx, code, holder, rules = DEFAULT_
   for (const third of sched.staff) {
     if (third.name === holder.name || third.name === me.name) continue;
     if (!thirdHasSpareShift(sched, third)) continue;
+    const takesPto = wantsOff.has(third.name);
     for (let j = 0; j < sched.n; j++) {
       if (j === dayIdx) continue;
       const tCode = sched.cell(third, j);
       if (!sched.isWork(tCode)) continue;
       if (!canWork(sched, holder, j)) continue;
-      relayCandidates.push({ third, j, tCode, wants: posted.has(`${third.name}|${j}`) });
+      const onBoard = posted.has(`${third.name}|${j}`);
+      relayCandidates.push({ third, j, tCode, onBoard, takesPto, wants: onBoard || takesPto });
     }
   }
   /* Ordering has to reflect plan quality, because the cap below is a hard cut.
    * Sorting by calendar distance alone would let a nearer but worse candidate
    * push out a clean one purely because it sits closer on the sheet. So:
-   * posted shifts first, then the smallest change to the holder's hours, and
-   * only then distance as a readability tiebreak. */
+   * shifts the third party wants gone first, then the smallest change to the
+   * holder's hours, and only then distance as a readability tiebreak. */
   const lostHours = lost;
   relayCandidates.sort((a, b) =>
     (b.wants - a.wants) ||
     (Math.abs(HOURS(sched, a.tCode) - lostHours) - Math.abs(HOURS(sched, b.tCode) - lostHours)) ||
     (Math.abs(a.j - dayIdx) - Math.abs(b.j - dayIdx)));
 
-  for (const { third, j, tCode, wants } of relayCandidates.slice(0, 30)) {
+  for (const { third, j, tCode, wants, onBoard, takesPto } of relayCandidates.slice(0, 30)) {
     const { flags } = flagsFor(sched, holder, j, tCode, rules);
     if (flags.some(f => f.severity === 'hard')) continue;
 
@@ -411,11 +451,20 @@ export function makeWholePlans(sched, me, dayIdx, code, holder, rules = DEFAULT_
       { person: holder, day: j, code: tCode }];
     if (createsGap(sched, moves)) continue;
 
-    const delta = HOURS(sched, tCode) - lost;
+    const hrs = HOURS(sched, tCode);
+    const delta = hrs - lost;
     const relayFlags = wants ? flags : [...flags, {
       severity: 'note', key: 'third-party',
-      text: `${third.name} would lose ${HOURS(sched, tCode)} hrs \u2014 only works if they want the time off`
+      text: `${third.name} would lose ${hrs} hrs \u2014 only works if they want the time off`
     }];
+
+    /* The wording matters more than it looks. Told the same fact two ways,
+     * "they lose 10 hrs" and "they get the day off they asked for" send the
+     * request to entirely different places. */
+    const detail =
+      onBoard  ? `${third.name} already put that shift on the board, so this settles two problems at once.`
+      : takesPto ? `${third.name} wants the time off, so they take PTO for that day and ${holder.name} covers it. The hours land where somebody wanted them.`
+      : `Makes ${holder.name} whole without touching your shifts \u2014 but it moves the lost hours onto ${third.name}, so they have to want it.`;
 
     plans.push({
       kind: 'relay',
@@ -423,12 +472,11 @@ export function makeWholePlans(sched, me, dayIdx, code, holder, rules = DEFAULT_
       title: wants
         ? `${holder.name} covers ${third.name}\u2019s ${sched.dateLabel(j)} ${tCode}`
         : `${holder.name} takes ${third.name}\u2019s ${sched.dateLabel(j)} ${tCode}`,
-      detail: wants
-        ? `${third.name} already put that shift on the board, so this settles two problems at once.`
-        : `Makes ${holder.name} whole without touching your shifts \u2014 but it moves the lost hours onto ${third.name}, so they have to want it.`,
+      detail,
       ownerHours: delta,
+      thirdTakesPto: takesPto,
       coverageDelta: 0,
-      via: { day: j, code: tCode, person: third.name, posted: wants },
+      via: { day: j, code: tCode, person: third.name, posted: onBoard, takesPto },
       flags: relayFlags,
       clean: wants && flags.length === 0 && delta >= 0,
       score: (wants ? 930 : 820) - Math.abs(delta) * 8 - flagCost(relayFlags)
@@ -460,12 +508,13 @@ export function makeWholePlans(sched, me, dayIdx, code, holder, rules = DEFAULT_
 /**
  * Everything the requester could ask for, across every day they marked available.
  */
-export function planRequests(sched, me, availability, rules = DEFAULT_RULES, posts = []) {
+export function planRequests(sched, me, availability, rules = DEFAULT_RULES, posts = [],
+                             wantsOff = new Set()) {
   const out = [];
   for (const i of [...availability].sort((a, b) => a - b)) {
     if (i < 0 || i >= sched.n) continue;
     for (const opt of requestableOn(sched, me, i, rules)) {
-      const plans = makeWholePlans(sched, me, i, opt.code, opt.holder, rules, posts);
+      const plans = makeWholePlans(sched, me, i, opt.code, opt.holder, rules, posts, wantsOff);
       out.push({ day: i, ...opt, plans, best: plans[0] || null });
     }
   }
@@ -473,47 +522,99 @@ export function planRequests(sched, me, availability, rules = DEFAULT_RULES, pos
 }
 
 /**
+ * A plan's identity, stable across recomputes.
+ *
+ * Plans are rebuilt from scratch whenever anything changes — a rule, an
+ * availability day, who wants time off — and their order changes with them, so
+ * a chosen plan cannot be remembered by its index. What doesn't change is the
+ * move it describes: this shift, from this person, on this day.
+ */
+export function planKey(plan) {
+  if (!plan) return '';
+  switch (plan.kind) {
+    case 'swap':   return `swap|${plan.giveBack.day}|${plan.giveBack.code}`;
+    case 'pickup': return `pickup|${plan.alt.day}|${plan.alt.code}`;
+    case 'relay':  return `relay|${plan.via.person}|${plan.via.day}|${plan.via.code}`;
+    default:       return plan.kind;   // 'open' and 'pto' are one-of-a-kind
+  }
+}
+
+/** Would this plan still work, given what earlier requests have already spent? */
+function planFits(plan, req, spent) {
+  if (plan.kind === 'swap') {
+    // Can't give back a shift you've already promised, or the one you're
+    // standing in on the day you just picked up.
+    if (spent.has(`give|${plan.giveBack.day}`)) return false;
+    if (plan.giveBack.day === req.day) return false;
+    return true;
+  }
+  // The same third-party shift can only be handed over once.
+  if (plan.kind === 'relay') return !spent.has(`${plan.via.person}|${plan.via.day}`);
+  return true;
+}
+
+function claim(plan, req, spent, dayTaken) {
+  dayTaken.add(req.day);
+  if (plan.kind === 'swap')  spent.add(`give|${plan.giveBack.day}`);
+  if (plan.kind === 'relay') spent.add(`${plan.via.person}|${plan.via.day}`);
+}
+
+/**
  * Requesting several shifts at once is where plans quietly collide: the same
  * give-back shift can look like the answer to three different requests, and
- * you only have it once. Walks the chosen requests in order and drops any plan
- * whose give-back has already been spent.
+ * you only have it once. Walks the requests and drops any plan whose give-back
+ * has already been spent.
+ *
+ * `chosen` maps "day:code" to a `planKey` the user picked by hand. Those are
+ * settled first, so a deliberate choice is never displaced by a plan the tool
+ * merely scored higher. A choice that still can't be honoured — because an
+ * earlier choice spent the same shift, or the plan no longer exists at all —
+ * falls back to the ranking and is reported as `chosenMissing` rather than
+ * silently swapped out.
  */
-export function reconcile(requests) {
+export function reconcile(requests, chosen = new Map()) {
   const spent = new Set();      // give-back shifts already promised
   const dayTaken = new Set();   // days the requester is now working
+  const out = requests.map(r => ({ ...r }));
 
-  return requests.map(r => {
-    // You can only be in one place at a time. If an earlier request already
-    // claimed this day, everything after it on the same day is unworkable.
+  const wantedKey = r => chosen.get(`${r.day}:${r.code}`) || null;
+
+  const settle = (r, o) => {
+    // You can only be in one place at a time. If another request already
+    // claimed this day, everything else on it is unworkable.
     if (dayTaken.has(r.day)) {
-      return { ...r, plans: [], best: null, conflicted: true,
-               conflictReason: 'You already picked up a different shift that day.' };
+      o.plans = []; o.best = null; o.chosenByUser = false; o.chosenMissing = false;
+      o.conflicted = true;
+      o.conflictReason = 'You already picked up a different shift that day.';
+      return;
     }
 
-    const viable = r.plans.filter(p => {
-      if (p.kind === 'swap') {
-        // Can't give back a shift you've already promised, or the one you're
-        // standing in on the day you just picked up.
-        if (spent.has(p.giveBack.day)) return false;
-        if (p.giveBack.day === r.day) return false;
-        return true;
-      }
-      if (p.kind === 'relay') {
-        // The same third-party shift can only be handed over once.
-        return !spent.has(`${p.via.person}|${p.via.day}`);
-      }
-      return true;
-    });
+    const viable = r.plans.filter(p => planFits(p, r, spent));
+    const want = wantedKey(r);
+    let best = null, byUser = false, missing = false;
 
-    const best = viable[0] || null;
-    if (best) {
-      dayTaken.add(r.day);
-      if (best.kind === 'swap')  spent.add(best.giveBack.day);
-      if (best.kind === 'relay') spent.add(`${best.via.person}|${best.via.day}`);
+    if (want) {
+      best = viable.find(p => planKey(p) === want) || null;
+      if (best) byUser = true;
+      else missing = true;   // conflicted away, or gone since it was picked
     }
-    return { ...r, plans: viable, best,
-             conflicted: viable.length < r.plans.length,
-             conflictReason: viable.length ? null
-               : 'The give-back that would have worked is already committed elsewhere.' };
-  });
+    if (!best) best = viable[0] || null;
+    if (best) claim(best, r, spent, dayTaken);
+
+    o.plans = viable;
+    o.best = best;
+    o.chosenByUser = byUser;
+    o.chosenMissing = missing;
+    o.conflicted = viable.length < r.plans.length;
+    o.conflictReason = viable.length ? null
+      : 'The give-back that would have worked is already committed elsewhere.';
+  };
+
+  /* Explicit choices go first so they reserve their give-back ahead of the
+   * ranking. Sorting is stable, so within each group the caller's order — day
+   * order, in practice — still decides who wins a genuine collision. */
+  const order = [...requests.keys()].sort((a, b) =>
+    (wantedKey(requests[b]) ? 1 : 0) - (wantedKey(requests[a]) ? 1 : 0));
+  for (const ix of order) settle(requests[ix], out[ix]);
+  return out;
 }

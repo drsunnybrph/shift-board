@@ -245,6 +245,26 @@ nav button[aria-current="true"]{color:var(--blue)}
 .plandet{font-size:13px;color:var(--muted);line-height:1.5;margin-top:8px}
 .plan .reasons{margin-top:9px}
 
+/* Plans are choices, not readouts, so they have to look pressable. */
+.planpick{display:block;width:100%;text-align:left;border-radius:var(--r);
+  transition:background .12s,box-shadow .12s}
+.planpick:active{background:var(--paper)}
+.planpick.chosen{background:var(--blue-soft);box-shadow:inset 3px 0 0 var(--blue)}
+.planpick.chosen .planhead .cname{font-weight:600}
+.planmark{margin-left:auto;flex-shrink:0;font-family:'IBM Plex Mono',monospace;font-size:9px;
+  letter-spacing:.09em;text-transform:uppercase;color:var(--muted);padding-top:3px}
+.planpick.chosen .planmark{color:var(--blue)}
+
+/* ---------- "they actually want the time off" ---------- */
+.wantsoff{display:flex;align-items:center;gap:8px;width:100%;text-align:left;
+  padding:9px 13px;border-top:1px solid var(--rule);font-size:12px;
+  color:var(--muted);line-height:1.35;background:rgba(255,255,255,.5)}
+.wantsoff .wo-box{flex-shrink:0;width:17px;height:17px;border-radius:5px;
+  border:1.5px solid var(--rule);background:var(--card);display:flex;
+  align-items:center;justify-content:center;font-size:11px;font-weight:700;color:#fff}
+.wantsoff.on{background:var(--green-soft);color:var(--green);font-weight:500}
+.wantsoff.on .wo-box{background:var(--green);border-color:var(--green)}
+
 /* six-item nav gets tighter labels */
 nav button .lb{font-size:10px}
 @media(max-width:360px){nav button .lb{font-size:9px}}

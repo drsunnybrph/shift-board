@@ -158,35 +158,16 @@ day. Anything that can't be made to work is called out rather than quietly dropp
 
 ### Choosing, and saying so
 
-The ranking is a suggestion. You know things the sheet doesn't — who owes who a favour, who is
-saving PTO for a trip, who would rather not be asked at all — so three things are yours to decide.
+The ranking is a suggestion, not a decision. Tap any plan to choose it and that choice survives
+recomputation — the tool will work the rest of the request around it rather than overriding it.
 
-**Pick the plan.** Tap any option in the detail sheet and it's the one step 3 uses, even where the
-score disagrees. Chosen plans are settled before ranked ones, so if two of your requests want the
-same give-back shift, the one you picked deliberately wins and the other falls back. A plan you
-picked stays visible even when re-ranking drops it well down the list — with its honest rank
-attached, because a choice you can't see is one you can't change.
+Where the ranking can't know something, you can tell it. If a colleague actually wants time off,
+mark them, and relays through their shifts stop reading as "this costs them hours" and start
+reading as what they are: the thing that person was already after. That marking is per person, so
+if they want *specific* days off, choose those plans by hand.
 
-**Say who wants the time off.** Every relay moves hours off a third person, and with nothing else
-to go on the tool has to warn you about that. But wanting the time off is the ordinary case — it's
-why most shifts get handed around at all — and a warning on a plan that suits everybody is the tool
-being wrong in a confident voice. Tap **"<name> actually wants time off?"** on any relay and that
-person's shifts stop reading as hours taken from them and start reading as PTO they asked for.
-Their relays get the same standing as a shift already posted on the board, everywhere they appear.
-This is a claim about a person, so it's declared rather than inferred, and it's remembered on your
-device only.
-
-**Send the right version.** Two buttons at the end, because these go to two different rooms:
-
-- **The group message** leads with what each person gets, in first names and plain language, with
-  the hours change stated per person rather than asserted to be fair. It's what the people in the
-  swap actually decide on. It ends with "I'll put in the swap request" and never names a manager —
-  departments route these differently, and guessing wrong in someone's group chat is worse than
-  staying vague.
-- **The manager summary** is dates, codes, who covers what, PTO spent, and the coverage assurance.
-
-Both copy as plain text, which is still the fastest way to get a plan in front of the people who
-have to agree to it.
+The finished plan copies two ways. The group-chat version opens with what each person gets, because
+that's what they'll decide on. The manager version is dates, codes, and the coverage assurance.
 
 ## How ranking works
 
@@ -251,7 +232,6 @@ assets/
   styles.css
   app.js                views, sheets, events
   engine.js             Schedule model, flags, ranking   ← the interesting file
-  request.js            "I want this shift": make-whole plans, choices, reconciliation
   parser.js             xlsx → model, entirely client-side
   demo-data.js          generated fake roster
 ```

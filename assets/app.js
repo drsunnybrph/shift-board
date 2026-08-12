@@ -1,9 +1,9 @@
 import { DEMO } from './demo-data.js';
 import { Schedule, findCoverage, DEFAULT_RULES, LEAVE_CODES } from './engine.js';
 import { readFile } from './parser.js';
-import { planRequests, reconcile, makeWholePlans, requestableOn, planKey,
-         loadAvailability, saveAvailability, loadWantsOff, saveWantsOff, openShifts,
-         freeDays, summarise } from './request.js';
+import { planRequests, reconcile, makeWholePlans, requestableOn,
+         loadAvailability, saveAvailability, openShifts,
+         freeDays, summarise, planKey } from './request.js';
 
 const MONTH = ['','Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 const DOWFULL = { Su:'Sunday', M:'Monday', T:'Tuesday', W:'Wednesday', Th:'Thursday', F:'Friday', Fr:'Friday', Sa:'Saturday' };
@@ -20,9 +20,8 @@ const state = {
   avail: new Set(),
   wantMode: 'days',
   picks: new Set(),
-  wantsOff: new Set(),   // names who've said they actually want the time off
-  chosen: new Map(),     // "day:code" -> planKey the user picked by hand
-  wantSheet: null        // { day, code } the detail sheet is currently showing
+  chosen: new Map(),
+  wantsOff: new Set()
 };
 
 const $ = id => document.getElementById(id);
@@ -350,12 +349,11 @@ function cachedPlans() {
     state.me,
     [...state.avail].sort((a, b) => a - b).join(','),
     state.posts.filter(p => !p.takenBy).map(p => `${p.by}:${p.idx}`).join('|'),
-    [...state.wantsOff].sort().join('|'),
+    [...state.wantsOff].sort().join(','),
     JSON.stringify(state.rules)
   ].join('##');
   if (_planCache.key === key) return _planCache.value;
-  _planCache = { key,
-    value: planRequests(s, me, state.avail, state.rules, state.posts, state.wantsOff) };
+  _planCache = { key, value: planRequests(s, me, state.avail, state.rules, state.posts, state.wantsOff) };
   return _planCache.value;
 }
 function invalidatePlans() { _planCache = { key: null, value: null }; }
@@ -365,11 +363,9 @@ function planBadge(p) {
   if (p.kind === 'open')   return '<span class="tag g">Unfilled &mdash; nobody loses hours</span>';
   if (p.kind === 'swap')   return '<span class="tag g">Even trade available</span>';
   if (p.kind === 'pickup') return '<span class="tag g">They pick up an open shift</span>';
-  if (p.kind === 'relay') {
-    if (p.via && p.via.posted)   return `<span class="tag g">${esc(p.third)} covers a posted shift</span>`;
-    if (p.via && p.via.takesPto) return `<span class="tag g">${esc(p.third)} takes the PTO day</span>`;
-    return `<span class="tag b">Three-way via ${esc(p.third)}</span>`;
-  }
+  if (p.kind === 'relay')  return p.via && p.via.posted
+    ? `<span class="tag g">${esc(p.third)} covers a posted shift</span>`
+    : `<span class="tag b">Three-way via ${esc(p.third)}</span>`;
   if (p.kind === 'pto')    return '<span class="tag a">Costs them PTO</span>';
   return '';
 }
@@ -466,9 +462,6 @@ function viewWant() {
         const on = state.picks.has(key);
         const blocked = dayPicked && !on;
         const pos = s.position(r.code);
-        // Show the plan they picked, not the one the tool would have picked.
-        const ck = state.chosen.get(key);
-        const shown = ck ? (r.plans.find(p => planKey(p) === ck) || r.best) : r.best;
         h += `<div class="card pickcard${on ? ' picked' : ''}${blocked ? ' blocked' : ''}">
           <button class="ctop" data-pick="${key}" ${blocked ? 'disabled' : ''}>
             <div class="tick">${on ? '\u2713' : ''}</div>
@@ -478,11 +471,10 @@ function viewWant() {
               <div class="who">${r.open ? '<b>Unfilled</b>' : `Held by <b>${esc(r.holder.name)}</b>`}</div>
               <div class="tagrow">${blocked
                 ? '<span class="tag">You already picked a shift this day</span>'
-                : planBadge(shown) + (ck ? '<span class="tag b">Your pick</span>' : '')}</div>
+                : planBadge(r.best)}</div>
             </div>
           </button>
-          <button class="why" data-want="${key}">${
-            ck ? 'Change how it works' : 'How it works'} &rsaquo;</button>
+          <button class="why" data-want="${key}">How it works &rsaquo;</button>
         </div>`;
       }
       h += '</div>';
@@ -494,10 +486,12 @@ function viewWant() {
   }
 
   /* ---------- step 3: the assembled plan ---------- */
-  const rec = plannedPicks();
+  const all = cachedPlans();
+  const chosen = all.filter(r => state.picks.has(`${r.day}:${r.code}`))
+                    .sort((a, b) => a.day - b.day);
+  const rec = reconcile(chosen, state.chosen);
   const sum = summarise(s, rec);
   const stuck = rec.filter(r => !r.best);
-  const overridden = rec.filter(r => r.chosenMissing && r.best);
 
   let h = stepBar('plan') +
     `<div class="card totals"><div class="tgrid">
@@ -519,16 +513,6 @@ function viewWant() {
     </div></div>`;
   }
 
-  /* A choice quietly replaced is worse than no choice at all, so say so. */
-  if (overridden.length) {
-    h += `<div class="card"><div class="plan">
-      <div class="cname">Using a different plan for ${overridden.length} shift${overridden.length > 1 ? 's' : ''}</div>
-      <div class="plandet">${overridden.map(r =>
-        `${s.dateLabel(r.day)} ${esc(r.code)} &mdash; the plan you picked needs a shift another
-         request already spent, so the next best is shown instead.`).join('<br>')}</div>
-    </div></div>`;
-  }
-
   h += `<div class="eyebrow"><span>Who to ask, and what they get</span></div>`;
 
   for (const p of sum.people) {
@@ -539,9 +523,7 @@ function viewWant() {
         ${p.takes.map(t => `<div class="rsn ok"><i>+</i>Takes ${
           t.from === 'open' ? 'the open' : t.from === 'you' ? 'your' : esc(t.from) + '\u2019s'
         } ${s.dateLabel(t.day)} ${esc(t.code)}</div>`).join('')}
-        ${p.pto ? (p.wantsIt
-          ? `<div class="rsn ok"><i>&#10003;</i>Takes ${p.pto} hrs of PTO &mdash; the time off they wanted</div>`
-          : `<div class="rsn cost"><i>$</i>Uses ${p.pto} hrs of PTO</div>`) : ''}
+        ${p.pto ? `<div class="rsn cost"><i>$</i>Uses ${p.pto} hrs of PTO</div>` : ''}
       </div>
     </div></div>`;
   }
@@ -555,129 +537,77 @@ function viewWant() {
     </div></div>`;
   }
 
-  /* Two registers, because these go to two different rooms. The people in the
-     swap decide on what they get; a manager signs off on dates and coverage. */
-  h += `<div class="eyebrow"><span>Send it</span></div>
-    <button class="btn p" data-act="copygroup">Copy the message for the group chat</button>
-    <button class="btn o" data-act="copysummary">Copy the summary for your manager</button>
+  h += `<button class="btn p" data-act="copygroup">Copy a message for the group chat</button>
+    <button class="btn o" data-act="copyplan">Copy the version for your manager</button>
     <button class="btn o" data-step="browse">Change what you picked</button>
     <div class="disc">Nothing here is agreed. Every swap needs the people involved to say yes and
       your manager to approve it.</div>`;
   return h;
 }
 
-/** The picked shifts, reconciled against each other and against your choices. */
-function plannedPicks() {
-  return reconcile(
-    cachedPlans().filter(r => state.picks.has(`${r.day}:${r.code}`))
-                 .sort((a, b) => a.day - b.day),
-    state.chosen);
-}
-
-/* First names only in the group message: "Gives A. Chen Aug 14 ED" is how a
-   scheduler writes, not how anyone asks a colleague for a favour. Initials and
-   single letters fall back to the full name rather than reading as a typo. */
-function firstName(name) {
-  const head = String(name).trim().split(/\s+/)[0] || '';
-  return (head.length >= 2 && !head.endsWith('.')) ? head : String(name).trim();
-}
-
-function andList(parts) {
-  if (parts.length <= 1) return parts[0] || '';
-  return parts.slice(0, -1).join(', ') + ' and ' + parts[parts.length - 1];
-}
+function firstName(n) { return String(n).split(/[\s,]+/)[0]; }
 
 /**
- * The plan as text, in one of two registers.
- *
- * 'group'   — what each person gets, first names, no codes-first inventory.
- *             This is the one that goes in the chat, and it leads with the
- *             thing people actually decide on: what happens to their week.
- * 'summary' — dates, codes, and the coverage assurance. The version that goes
- *             to whoever has to approve it.
- *
- * Neither names a manager. Departments route this differently and guessing
- * wrong in someone's group chat is worse than staying vague.
+ * Two audiences, two registers. The summary is for a manager or a swap form:
+ * dates, codes, and the coverage assurance. The group message is for the
+ * people whose shifts are moving, and it has to open with what each of them
+ * gets, because that is the part they will decide on.
  */
-function planText(style = 'group') {
-  const s = state.sched;
-  const rec = plannedPicks();
+function planText(style = 'summary') {
+  const s = state.sched, me = s.person(state.me);
+  const rec = reconcile(cachedPlans().filter(r => state.picks.has(`${r.day}:${r.code}`))
+                                     .sort((a, b) => a.day - b.day), state.chosen);
   const sum = summarise(s, rec);
   const L = [];
 
   if (style === 'group') {
-    L.push('Hi all — I’m trying to pick up a few shifts and wanted to check this works for everyone.');
+    const names = sum.people.map(p => firstName(p.name));
+    const greeting = names.length === 0 ? 'Hey'
+      : names.length === 1 ? `Hey ${names[0]}`
+      : `Hey ${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
+    L.push(`${greeting} \u2014 trying to sort out some shifts and I think this works for everyone.`);
     L.push('');
 
     for (const p of sum.people) {
-      /* Grouped by who receives it, so two shifts going to the same person read
-         as "your Mar 2 N and Mar 8 N to me" rather than naming them twice. */
-      const byRecipient = new Map();
-      for (const g of p.gives) {
-        const to = g.to ? firstName(g.to) : 'me';
-        if (!byRecipient.has(to)) byRecipient.set(to, []);
-        byRecipient.get(to).push(`${s.dateLabel(g.day)} ${g.code}`);
-      }
-      const gives = [...byRecipient].map(([to, shifts]) => `your ${andList(shifts)} to ${to}`);
+      const fn = firstName(p.name);
+      const bits = [];
+      if (p.gives.length) bits.push(`you'd hand off ${p.gives.map(g => `${s.dateLabel(g.day)} ${g.code}`).join(' and ')}`);
+      const fromOthers = p.takes.filter(t => t.from !== 'open' && t.from !== 'you');
+      const fromMe = p.takes.filter(t => t.from === 'you');
+      const fromOpen = p.takes.filter(t => t.from === 'open');
+      if (fromMe.length)     bits.push(`you'd pick up my ${fromMe.map(t => `${s.dateLabel(t.day)} ${t.code}`).join(' and ')}`);
+      if (fromOthers.length) bits.push(`you'd cover ${fromOthers.map(t => `${firstName(t.from)}'s ${s.dateLabel(t.day)} ${t.code}`).join(' and ')}`);
+      if (fromOpen.length)   bits.push(`you'd pick up the open ${fromOpen.map(t => `${s.dateLabel(t.day)} ${t.code}`).join(' and ')}`);
+      if (p.pto)             bits.push(`you'd use ${p.pto} hrs of PTO`);
 
-      const takes = p.takes.map(t =>
-        t.from === 'open' ? `the open ${s.dateLabel(t.day)} ${t.code}`
-        : t.from === 'you' ? `my ${s.dateLabel(t.day)} ${t.code}`
-        : `${firstName(t.from)}’s ${s.dateLabel(t.day)} ${t.code}`);
+      const net = p.takes.reduce((t, x) => t + s.hoursOf(x.code), 0)
+                - p.gives.reduce((t, x) => t + s.hoursOf(x.code), 0);
+      const tail = p.pto ? ''
+        : net === 0 ? ' \u2014 so your hours come out the same'
+        : net > 0 ? ` \u2014 so you'd be up ${Math.round(net * 10) / 10} hrs`
+        : ` \u2014 that's ${Math.abs(Math.round(net * 10) / 10)} hrs less, so only if the time off works for you`;
 
-      const gets = [...takes];
-      if (p.pto) gets.push(p.wantsIt
-        ? `${p.pto} hrs of PTO — the time off you were after`
-        : `${p.pto} hrs of PTO`);
-
-      /* One clause per sentence. Nesting "and" inside "and" is how a message
-         stops being readable at exactly the point it starts being useful. */
-      let line = `${firstName(p.name)} — you’d hand ${andList(gives)}.`;
-      if (gets.length) line += ` In return you’d take ${andList(gets)}.`;
-
-      /* Say what it costs them, in hours, rather than asserting it's fair.
-         PTO counts as paid, so it belongs on the same side as a shift back. */
-      const gave = p.gives.reduce((n, g) => n + s.hoursOf(g.code), 0);
-      const got = p.takes.reduce((n, t) => n + s.hoursOf(t.code), 0) + p.pto;
-      const delta = Math.round((got - gave) * 10) / 10;
-      if (p.pto && !p.wantsIt) line += ' The shift stays covered because I’m working it.';
-      else if (delta > 0) line += ` That’s ${delta} hrs more than you’re giving up.`;
-      else if (delta < 0) line += ` That leaves you ${Math.abs(delta)} hrs short — say if that doesn’t work.`;
-      // Someone who asked for the time off doesn't need the hours reassurance.
-      else if (!p.wantsIt) line += ' Your hours come out the same.';
-
-      L.push(line);
-    }
-
-    const open = rec.filter(r => r.best && r.best.kind === 'open');
-    if (open.length) {
-      L.push('');
-      L.push(`Nobody to ask about ${open.map(r => `${s.dateLabel(r.day)} ${r.code}`).join(', ')} — ${
-        open.length > 1 ? 'those are' : 'that’s'} unfilled already.`);
-    }
-
-    const noPlan = rec.filter(r => !r.best);
-    if (noPlan.length) {
-      L.push('');
-      L.push(`Still stuck on ${noPlan.map(r => `${s.dateLabel(r.day)} ${r.code}`).join(', ')} — open to ideas.`);
+      L.push(`${fn}: ${bits.join(', ')}${tail}.`);
     }
 
     L.push('');
-    L.push('No shift ends up uncovered under this, and nobody loses hours they weren’t happy to lose.');
-    L.push('If everyone’s good with it, I’ll put in the swap request.');
+    const mine = rec.filter(r => r.best).map(r => `${s.dateLabel(r.day)} ${r.code}`);
+    if (mine.length) L.push(`I'd pick up ${mine.join(', ')}.`);
+    L.push('Nothing changes coverage \u2014 every shift still has someone on it.');
+    L.push('');
+    L.push('Let me know if this works for you and I\u2019ll put in the swap request.');
     return L.join('\n');
   }
 
-  L.push(`Shift request — ${s.dateLabel(0)} to ${s.dateLabel(s.n - 1)}`);
+  L.push(`Shift swap proposal \u2014 ${s.dateLabel(0)} to ${s.dateLabel(s.n - 1)}`);
   L.push('');
   for (const r of rec) {
-    if (!r.best) { L.push(`${s.dateLabel(r.day)} ${r.code} — no workable plan`); continue; }
-    if (r.best.kind === 'open') { L.push(`${s.dateLabel(r.day)} ${r.code} — unfilled, manager approval only`); continue; }
+    if (!r.best) { L.push(`${s.dateLabel(r.day)} ${r.code} \u2014 no workable plan`); continue; }
+    if (r.best.kind === 'open') { L.push(`${s.dateLabel(r.day)} ${r.code} \u2014 unfilled, manager approval only`); continue; }
     if (r.best.kind === 'relay') {
-      L.push(`${s.dateLabel(r.day)} ${r.code} — from ${r.holder.name}, who covers ${r.best.via.person}’s ${s.dateLabel(r.best.via.day)} ${r.best.via.code} instead${
-        r.best.thirdTakesPto ? ` (${r.best.via.person} takes PTO that day)` : ''}`);
+      L.push(`${s.dateLabel(r.day)} ${r.code} \u2014 from ${r.holder.name}, who covers ${r.best.via.person}\u2019s ${s.dateLabel(r.best.via.day)} ${r.best.via.code} instead`);
     } else {
-      L.push(`${s.dateLabel(r.day)} ${r.code} — from ${r.holder.name}: ${r.best.title.replace(/^They /, '')}`);
+      L.push(`${s.dateLabel(r.day)} ${r.code} \u2014 from ${r.holder.name}: ${r.best.title.replace(/^They /, '')}`);
     }
   }
   L.push('');
@@ -688,40 +618,14 @@ function planText(style = 'group') {
   return L.join('\n');
 }
 
-/* The one fact the spreadsheet cannot hold.
- *
- * Every relay moves hours off a third person, and with nothing else to go on
- * the tool has to warn about it. But wanting the time off is the ordinary case
- * — it's why most shifts get handed around in the first place — and a warning
- * on a plan that suits everybody is the tool being wrong in a confident voice.
- * One tap fixes it, for that person, everywhere.
- *
- * `seen` keeps it to one toggle per person per sheet. Marking someone as
- * wanting time off usually surfaces several more of their shifts as relays,
- * and repeating the same switch down the list reads like several separate
- * questions about the same person. */
-function wantsOffToggle(name, seen) {
-  if (seen.has(name)) return '';
-  seen.add(name);
-  const on = state.wantsOff.has(name);
-  return `<button class="wantsoff${on ? ' on' : ''}" role="switch" aria-checked="${on}"
-      data-wantsoff="${esc(name)}">
-    <span class="wo-box">${on ? '✓' : ''}</span>
-    <span>${on
-      ? `${esc(name)} wants the time off — this counts as doing them a favour`
-      : `${esc(name)} actually wants time off?`}</span>
-  </button>`;
-}
-
 function openWant(dayIdx, code) {
+  state.openWantArgs = [dayIdx, code];
   const s = state.sched, me = s.person(state.me);
   const d = s.dates[dayIdx], pos = s.position(code);
   const opts = requestableOn(s, me, dayIdx, state.rules);
   const opt = opts.find(o => o.code === code);
   const holder = opt ? opt.holder : null;
   const plans = makeWholePlans(s, me, dayIdx, code, holder, state.rules, state.posts, state.wantsOff);
-  state.wantSheet = { day: dayIdx, code };
-  const pickedKey = state.chosen.get(`${dayIdx}:${code}`) || null;
 
   $('shead').innerHTML = `<h2>${DOWFULL[d.dow] || d.dow}, ${MONTH[d.m]} ${d.d}</h2>
     <p><span class="mono">${esc(code)}${pos ? ' \u00b7 ' + esc(pos.time) : ''}</span> &mdash;
@@ -735,33 +639,18 @@ function openWant(dayIdx, code) {
       <div class="hint">They hold a benefited line, so those hours are income they were counting on.
         Pick the option that suits them, not the one that suits you &mdash; and let them choose.</div>
     </div></div>
-    <div class="eyebrow"><span>How they come out whole</span>
-      <span class="mono">${pickedKey ? 'you picked one' : 'tap to pick'}</span></div>`;
+    <div class="eyebrow"><span>How they come out whole</span></div>`;
 
-    /* Only the first handful are worth reading, but the plan you picked is
-       always one of them. Marking someone as wanting time off promotes several
-       of their shifts at once, which can push an earlier choice below the cut —
-       and a choice you can't see is one you can't change, while it quietly goes
-       on driving step 3. */
-    const ranked = plans.map((p, i) => ({ p, rank: i + 1 }));
-    const shown = ranked.slice(0, 6);
-    if (pickedKey && !shown.some(x => planKey(x.p) === pickedKey)) {
-      const kept = ranked.find(x => planKey(x.p) === pickedKey);
-      if (kept) shown.push(kept);
-    }
-
-    const askedAbout = new Set();
-    shown.forEach(({ p, rank }) => {
+    const key = `${dayIdx}:${code}`;
+    const chosenKey = state.chosen.get(key);
+    plans.slice(0, 8).forEach((p, n) => {
       const bad = p.flags.some(f => f.severity === 'hard');
-      const key = planKey(p);
-      const mine = key === pickedKey;
-      // Rank 1 is only "the plan" until someone says otherwise.
-      const acting = mine || (!pickedKey && rank === 1);
-      h += `<div class="card${bad ? ' urg' : ''}">
-        <button class="planpick${mine ? ' chosen' : ''}" data-choose="${esc(key)}"
-                aria-pressed="${mine}"><div class="plan">
+      const pk = planKey(p);
+      const isChosen = chosenKey ? chosenKey === pk : n === 0;
+      h += `<div class="card planpick${isChosen ? ' chosen' : ''}${bad ? ' urg' : ''}"
+              data-plan="${key}##${esc(pk)}"><div class="plan">
         <div class="planhead">
-          <span class="rank ${acting && !bad ? 'top' : bad ? 'warn' : ''}">${rank}</span>
+          <span class="rank ${isChosen ? 'top' : bad ? 'warn' : ''}">${isChosen ? '\u2713' : n + 1}</span>
           <div><div class="cname">${esc(p.title)}</div>
             <div class="planmeta mono">${
               p.kind === 'pto' ? `\u2212${p.ptoHours} hrs PTO balance`
@@ -769,16 +658,16 @@ function openWant(dayIdx, code) {
               : `${p.ownerHours > 0 ? '+' : ''}${p.ownerHours} hrs`
             }${p.coverageDelta > 0 ? ' \u00b7 fills an open shift'
               : p.kind === 'relay' ? ' \u00b7 3 people' : ' \u00b7 coverage held'}</div>
-          </div>
-          <span class="planmark">${mine ? '\u2713 Picked' : acting ? 'Top ranked' : ''}</span>
-          </div>
+          </div></div>
         <div class="plandet">${esc(p.detail)}</div>
         ${p.flags.length ? `<div class="reasons">${p.flags.map(f =>
           `<div class="rsn ${f.severity === 'hard' ? 'bad' : f.severity === 'cost' ? 'cost' : 'warn'}">
             <i>${f.severity === 'cost' ? '$' : '!'}</i>${esc(f.text)}</div>`).join('')}</div>` : ''}
-      </div></button>
-      ${p.kind === 'relay' ? wantsOffToggle(p.third, askedAbout) : ''}
-      </div>`;
+        ${p.kind === 'relay' ? `<button class="wantsoff${state.wantsOff.has(p.third) ? ' on' : ''}"
+            data-wantsoff="${esc(p.third)}">${state.wantsOff.has(p.third)
+              ? `\u2713 ${esc(p.third)} wants the time off`
+              : `${esc(p.third)} actually wants time off?`}</button>` : ''}
+      </div></div>`;
     });
   } else {
     h += `<div class="card ok-card"><div class="safe-in">
@@ -788,7 +677,8 @@ function openWant(dayIdx, code) {
     </div></div>`;
   }
 
-  h += `<button class="btn p" data-ask="${holder ? esc(holder.name) : 'your manager'}">
+  h += `${holder ? `<button class="btn p" data-act="closesheet">Use this plan</button>` : ''}
+    <button class="btn o" data-ask="${holder ? esc(holder.name) : 'your manager'}">
       ${holder ? 'Ask ' + esc(holder.name.split(' ')[0]) : 'Ask your manager'}</button>
     <div class="disc">Nothing is agreed until they say yes and your manager approves it.</div>`;
   $('sbody').innerHTML = h;
@@ -879,7 +769,7 @@ function openPostForm(idx) {
 }
 
 function openSheet() { $('scrim').classList.add('open'); $('sheet').classList.add('open'); }
-function closeSheet() { $('scrim').classList.remove('open'); $('sheet').classList.remove('open'); state.pending = null; }
+function closeSheet() { state.openWantArgs = null; $('scrim').classList.remove('open'); $('sheet').classList.remove('open'); state.pending = null; }
 function toast(msg) {
   const t = $('toast'); t.textContent = msg; t.classList.add('show');
   clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove('show'), 2500);
@@ -922,7 +812,6 @@ async function handleFile(f) {
     state.sched.raw = model;
     state.posts = [];
     state.picks = new Set();
-    state.chosen = new Map();
     const meRow = model.staff.find(p => p.name === state.me) || model.staff[0];
     const prefill = declaredAvailForPrefill(state.sched, meRow);
     if (prefill) { state.avail = prefill; saveAvailability(state.avail); }
@@ -956,36 +845,8 @@ function fillPicker() {
 
 /* ---------- events ---------- */
 document.addEventListener('click', async e => {
-  const t = e.target.closest('[data-open],[data-post],[data-take],[data-ask],[data-undo],[data-kind],[data-tab],[data-gap],[data-rule],[data-act],[data-avail],[data-want],[data-pick],[data-step],[data-week],[data-choose],[data-wantsoff],#submitPost');
+  const t = e.target.closest('[data-open],[data-post],[data-take],[data-ask],[data-undo],[data-kind],[data-tab],[data-gap],[data-rule],[data-act],[data-avail],[data-want],[data-pick],[data-step],[data-week],[data-plan],[data-wantsoff],#submitPost');
   if (!t) return;
-
-  /* Picking a plan in the detail sheet. The ranking is a suggestion; this is a
-     decision, and step 3 uses it even where the score disagrees. */
-  if (t.dataset.choose !== undefined && t.hasAttribute('data-choose')) {
-    const sheet = state.wantSheet;
-    if (!sheet) return;
-    const k = `${sheet.day}:${sheet.code}`;
-    if (state.chosen.get(k) === t.dataset.choose) state.chosen.delete(k);
-    else {
-      state.chosen.set(k, t.dataset.choose);
-      // Choosing how a shift works is choosing the shift, unless another one
-      // that day is already spoken for.
-      const dayClaimed = [...state.picks].some(p => +p.split(':')[0] === sheet.day);
-      if (!dayClaimed) state.picks.add(k);
-    }
-    openWant(sheet.day, sheet.code);
-    render();
-    return;
-  }
-  if (t.dataset.wantsoff) {
-    const n = t.dataset.wantsoff;
-    if (state.wantsOff.has(n)) state.wantsOff.delete(n); else state.wantsOff.add(n);
-    saveWantsOff(state.wantsOff);
-    invalidatePlans();
-    if (state.wantSheet) openWant(state.wantSheet.day, state.wantSheet.code);
-    render();
-    return;
-  }
 
   if (t.dataset.avail !== undefined && t.hasAttribute('data-avail')) {
     const i = +t.dataset.avail;
@@ -995,6 +856,22 @@ document.addEventListener('click', async e => {
   if (t.dataset.want) {
     const [d, c] = t.dataset.want.split(':');
     openWant(+d, c); return;
+  }
+  if (t.dataset.wantsoff) {
+    const who = t.dataset.wantsoff;
+    if (state.wantsOff.has(who)) state.wantsOff.delete(who); else state.wantsOff.add(who);
+    try { localStorage.setItem('shiftboard.wantsoff', JSON.stringify([...state.wantsOff])); } catch {}
+    invalidatePlans();
+    if (state.openWantArgs) openWant(...state.openWantArgs);
+    render(); return;
+  }
+  if (t.dataset.plan) {
+    const [key, pk] = t.dataset.plan.split('##');
+    if (state.chosen.get(key) === pk) state.chosen.delete(key);
+    else state.chosen.set(key, pk);
+    state.picks.add(key);
+    if (state.openWantArgs) openWant(...state.openWantArgs);
+    render(); return;
   }
   if (t.dataset.pick) {
     if (state.picks.has(t.dataset.pick)) state.picks.delete(t.dataset.pick);
@@ -1024,16 +901,13 @@ document.addEventListener('click', async e => {
     saveAvailability(state.avail); invalidatePlans(); render(); return;
   }
   if (t.dataset.act === 'clearavail') {
-    state.avail.clear(); state.picks.clear(); state.chosen.clear();
+    state.avail.clear(); state.picks.clear();
     saveAvailability(state.avail); invalidatePlans(); render(); return;
   }
-  if (t.dataset.act === 'copygroup' || t.dataset.act === 'copysummary') {
-    const group = t.dataset.act === 'copygroup';
-    const txt = planText(group ? 'group' : 'summary');
-    const ok = group ? 'Copied \u2014 paste it into the group chat'
-                     : 'Copied \u2014 the manager version';
+  if (t.dataset.act === 'copygroup' || t.dataset.act === 'copyplan') {
+    const txt = planText(t.dataset.act === 'copygroup' ? 'group' : 'summary');
     if (navigator.clipboard) navigator.clipboard.writeText(txt).then(
-      () => toast(ok),
+      () => toast('Copied \u2014 paste it into your messages'),
       () => toast('Couldn\u2019t copy on this browser'));
     else toast('Copying isn\u2019t supported on this browser');
     return;
@@ -1051,6 +925,7 @@ document.addEventListener('click', async e => {
     openCoverage(+day, code, null, null);
     return;
   }
+  if (t.dataset.act === 'closesheet') { closeSheet(); render(); return; }
   if (t.dataset.act === 'pick') { $('file').click(); return; }
   if (t.dataset.act === 'reset') {
     forget();
@@ -1109,7 +984,6 @@ $('me').addEventListener('change', e => {
   state.me = e.target.value;
   invalidatePlans();
   state.picks = new Set();
-  state.chosen = new Map();
   const person = state.sched.person(state.me);
   const prefill = declaredAvailForPrefill(state.sched, person);
   state.avail = prefill || new Set();
@@ -1140,7 +1014,10 @@ function seedPosts(s) {
 (async function boot() {
   await load();
   state.avail = loadAvailability();
-  state.wantsOff = loadWantsOff();
+  try {
+    const w = localStorage.getItem('shiftboard.wantsoff');
+    if (w) state.wantsOff = new Set(JSON.parse(w));
+  } catch {}
   if (state.savedModel) {
     try {
       state.sched = new Schedule(state.savedModel);

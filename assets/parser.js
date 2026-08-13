@@ -260,6 +260,11 @@ export function parseWorkbook(workbook, opts = {}) {
 
   return {
     meta: { label: sheetName, weekStart: 0, source: 'uploaded',
+            // When the file was read. A schedule sheet records months and days
+            // but no year, and the load date is the honest anchor for working
+            // it out — far better than "now", which drifts every time someone
+            // opens the app months later.
+            loadedAt: Date.now(),
             availabilityColors: [...availColors] },
     dates: cleanDates,
     positions: positions.sort((a, b) => a.code.localeCompare(b.code)),

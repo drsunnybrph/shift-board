@@ -1,6 +1,7 @@
 import { DEMO } from './demo-data.js';
 import { Schedule, findCoverage, DEFAULT_RULES, LEAVE_CODES } from './engine.js';
 import { readFile } from './parser.js';
+import { buildICS, downloadICS, inferYear } from './calendar.js';
 import { planRequests, reconcile, makeWholePlans, requestableOn,
          loadAvailability, saveAvailability, openShifts,
          freeDays, summarise, planKey,
@@ -23,6 +24,7 @@ const state = {
   picks: new Set(),
   chosen: new Map(),
   sickDay: null,
+  yearOverride: null,
   sickCode: null,
   wantsOff: new Set()
 };
@@ -171,7 +173,25 @@ function viewMine() {
   let h = '';
   const picked = state.posts.filter(x => x.takenBy === state.me);
   if (picked.length) h += `<div class="eyebrow"><span>You picked up</span></div>` + picked.map(postCard).join('');
-  h += `<div class="eyebrow"><span>Your schedule</span><span class="mono">${s.totalShifts(p)} shifts</span></div>`;
+  const shiftCount = s.totalShifts(p);
+  if (shiftCount) {
+    h += `<div class="eyebrow"><span>Put these in your calendar</span></div>
+      <div class="card"><div class="safe-in">
+        <div class="lbl">${shiftCount} shift${shiftCount > 1 ? 's' : ''} — just yours</div>
+        <div class="hint">Downloads a calendar file your phone already knows how to open. Works with
+          Apple Calendar, Google Calendar and Outlook, with no account to connect. Only your own
+          shifts go in it, and the file is built on this device.</div>
+      </div></div>
+      <div class="card"><div class="row"><div>
+        <div class="lbl">Year</div>
+        <div class="hint">${state.yearOverride ? 'Set by you.' :
+          'Worked out from the dates and weekdays in the sheet, anchored to when you loaded it — schedules don’t record a year.'}</div>
+      </div><input type="number" data-year value="${scheduleYear()}" min="2000" max="2100" step="1"></div></div>
+      <button class="btn p" data-act="ics">Add to my calendar</button>
+      <div class="disc">Overnight shifts carry across midnight correctly. If your schedule changes,
+        download again — re-importing updates the same events rather than duplicating them.</div>`;
+  }
+  h += `<div class="eyebrow"><span>Your schedule</span><span class="mono">${shiftCount} shifts</span></div>`;
   for (let w = 0; w < s.n; w += 7) {
     const end = Math.min(w + 6, s.n - 1);
     const hrs = s.weeklyHours(p, w, null, null, state.rules);
@@ -188,6 +208,11 @@ function viewMine() {
     h += '</div></div>';
   }
   return h;
+}
+
+/** The year this schedule sits in: what the user set, else what was inferred. */
+function scheduleYear() {
+  return state.yearOverride || inferYear(state.sched);
 }
 
 /** Best guess at where today falls in the loaded period, or null. */
@@ -956,6 +981,8 @@ async function handleFile(f) {
     state.sched.raw = model;
     state.posts = [];
     state.picks = new Set();
+    state.yearOverride = null;      // a new sheet gets a fresh reading
+    try { localStorage.removeItem('shiftboard.year'); } catch {}
     const meRow = model.staff.find(p => p.name === state.me) || model.staff[0];
     const prefill = declaredAvailForPrefill(state.sched, meRow);
     if (prefill) { state.avail = prefill; saveAvailability(state.avail); }
@@ -1082,6 +1109,24 @@ document.addEventListener('click', async e => {
     state.sickDay = +day; state.sickCode = code; state.tab = 'gaps'; render();
     return;
   }
+  if (t.dataset.act === 'ics') {
+    const p = state.sched.person(state.me);
+    if (!p) return;
+    try {
+      const { ics, count, year } = buildICS(state.sched, p, {
+        rules: state.rules,
+        year: scheduleYear(),
+        calendarName: `${p.name} — shifts`
+      });
+      if (!count) { toast('No shifts to add'); return; }
+      const safe = String(p.name).toLowerCase().replace(/[^a-z0-9]+/g, '-');
+      downloadICS(ics, `shifts-${safe}-${year}.ics`);
+      toast(`${count} shift${count > 1 ? 's' : ''} ready — open the file to add them`);
+    } catch (err) {
+      toast('Couldn’t build the calendar file');
+    }
+    return;
+  }
   if (t.dataset.act === 'closesheet') { closeSheet(); render(); return; }
   if (t.dataset.act === 'pick') { $('file').click(); return; }
   if (t.dataset.act === 'reset') {
@@ -1129,6 +1174,15 @@ document.addEventListener('click', async e => {
 });
 
 document.addEventListener('change', async e => {
+  if (e.target.hasAttribute && e.target.hasAttribute('data-year')) {
+    const v = parseInt(e.target.value, 10);
+    if (Number.isFinite(v) && v > 2000 && v < 2100) {
+      state.yearOverride = v === inferYear(state.sched) ? null : v;
+      try { localStorage.setItem('shiftboard.year', JSON.stringify(state.yearOverride)); } catch {}
+      render();
+    }
+    return;
+  }
   if (e.target.dataset?.num) {
     const v = parseFloat(e.target.value);
     if (Number.isFinite(v)) { state.rules[e.target.dataset.num] = v; state.sched.rules = state.rules; invalidatePlans(); await save(); }
@@ -1174,6 +1228,8 @@ function seedPosts(s) {
   try {
     const w = localStorage.getItem('shiftboard.wantsoff');
     if (w) state.wantsOff = new Set(JSON.parse(w));
+    const y = localStorage.getItem('shiftboard.year');
+    if (y) state.yearOverride = JSON.parse(y);
   } catch {}
   if (state.savedModel) {
     try {

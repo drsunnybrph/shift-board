@@ -169,6 +169,31 @@ if they want *specific* days off, choose those plans by hand.
 The finished plan copies two ways. The group-chat version opens with what each person gets, because
 that's what they'll decide on. The manager version is dates, codes, and the coverage assurance.
 
+## Getting your shifts into your phone
+
+The Mine tab has a button that downloads a standard `.ics` file. Apple Calendar, Google Calendar
+and Outlook all import it, so nobody has to connect an account or grant access to anything.
+
+Only the signed-in person's own shifts go in the file, and it's generated in the browser like
+everything else here — a roster can't leak out of it.
+
+Two details it gets right that are easy to get wrong:
+
+- **Overnight shifts.** A 1430-0100 shift ends the *next* day. Writing the end time without rolling
+  the date makes the event run backwards, and most calendar apps silently drop it.
+- **The year.** Schedule sheets record a month and a day and almost never a year, so it has to be
+  worked out — and it's anchored to **when the file was loaded**, not to the current moment. A
+  schedule uploaded in August and exported to a calendar the following February must still resolve
+  to the year it was uploaded in; using "now" would quietly shift every date by a year. Within that
+  anchor, the day-of-week labels settle it: only one candidate year makes the dates fall on the
+  right weekdays, which also handles a December schedule opened in January.
+
+  The resolved year is shown next to the button and can be overridden. Inference that can't be
+  seen or corrected is worse than no inference.
+
+Events use floating local time with no timezone attached, which is what shift work wants: 1430 means
+1430 where you are, not converted from anywhere.
+
 ## Sick calls
 
 A different problem from a planned swap, with different rules.

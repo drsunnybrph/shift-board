@@ -3,7 +3,8 @@ import { Schedule, findCoverage, DEFAULT_RULES, LEAVE_CODES } from './engine.js'
 import { readFile } from './parser.js';
 import { planRequests, reconcile, makeWholePlans, requestableOn,
          loadAvailability, saveAvailability, openShifts,
-         freeDays, summarise, planKey } from './request.js';
+         freeDays, summarise, planKey,
+         sickCallCandidates, SICK_TIERS } from './request.js';
 
 const MONTH = ['','Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 const DOWFULL = { Su:'Sunday', M:'Monday', T:'Tuesday', W:'Wednesday', Th:'Thursday', F:'Friday', Fr:'Friday', Sa:'Saturday' };
@@ -21,6 +22,8 @@ const state = {
   wantMode: 'days',
   picks: new Set(),
   chosen: new Map(),
+  sickDay: null,
+  sickCode: null,
   wantsOff: new Set()
 };
 
@@ -171,7 +174,7 @@ function viewMine() {
   h += `<div class="eyebrow"><span>Your schedule</span><span class="mono">${s.totalShifts(p)} shifts</span></div>`;
   for (let w = 0; w < s.n; w += 7) {
     const end = Math.min(w + 6, s.n - 1);
-    const hrs = s.weeklyHours(p, w);
+    const hrs = s.weeklyHours(p, w, null, null, state.rules);
     const over = hrs > state.rules.weeklyOvertimeHours;
     h += `<div class="wk"><div class="wklab"><span>${s.dateLabel(w)} &ndash; ${s.dateLabel(end)}</span>
       <span${over ? ' style="color:var(--amber)"' : ''}>${hrs} hrs</span></div><div class="wkgrid">`;
@@ -187,26 +190,145 @@ function viewMine() {
   return h;
 }
 
+/** Best guess at where today falls in the loaded period, or null. */
+function todayIndex(s) {
+  const now = new Date();
+  const m = now.getMonth() + 1, d = now.getDate();
+  for (let i = 0; i < s.n; i++) if (s.dates[i].m === m && s.dates[i].d === d) return i;
+  return null;
+}
+
 function viewGaps() {
   const s = state.sched;
-  const gaps = s.gaps();
-  if (!gaps.length) {
-    return `<div class="empty"><div class="big">Every required position is filled</div>
-      Gaps show up here when a required slot has nobody assigned.</div>`;
+  const today = todayIndex(s);
+
+  /* ---------- sick-call picker ---------- */
+  if (state.sickDay === null) {
+    let days = '';
+    for (let w = 0; w < s.n; w += 7) {
+      const end = Math.min(w + 6, s.n - 1);
+      days += `<div class="wk"><div class="wklab"><span>${s.dateLabel(w)} &ndash; ${s.dateLabel(end)}</span></div>
+        <div class="wkgrid">`;
+      for (let i = w; i <= end; i++) {
+        const d = s.dates[i];
+        days += `<button class="cell av${i === today ? ' istoday' : ''}" data-sickday="${i}">
+          <div class="cd">${d.dow} ${d.d}</div>
+          <div class="cc">${i === today ? 'today' : ''}</div></button>`;
+      }
+      days += '</div></div>';
+    }
+
+    const gaps = s.gaps();
+    let gapBlock = '';
+    if (gaps.length) {
+      const byDay = {};
+      for (const g of gaps) (byDay[g.day] ||= []).push(g.code);
+      gapBlock = `<div class="eyebrow"><span>Already unfilled</span>
+        <span class="mono">${gaps.length}</span></div>`;
+      for (const day of Object.keys(byDay).sort((a, b) => a - b)) {
+        const codes = byDay[day];
+        gapBlock += `<div class="card"><div class="ctop">${dateBlock(+day)}
+          <div class="cbody"><div class="line1">${codes.map(c => `<span class="code">${esc(c)}</span>`).join('')}</div>
+          <div class="who">${codes.length} position${codes.length > 1 ? 's' : ''} with nobody assigned</div>
+          <div class="tagrow">${codes.map(c =>
+            `<button class="tag b" data-gap="${day}:${esc(c)}">Who can cover ${esc(c)}</button>`).join('')}</div>
+          </div></div></div>`;
+      }
+    }
+
+    return `<div class="card"><div class="safe-in">
+        <div class="lbl">Somebody called out?</div>
+        <div class="hint">Pick the day and the shift, and you&rsquo;ll get everyone who could take
+          it &mdash; not just people who marked themselves available. When a shift starts in three
+          hours you need the whole list, in the order worth calling.</div>
+      </div></div>
+      ${today !== null ? `<button class="btn p" data-sickday="${today}">
+          Someone called out today &mdash; ${s.dateLabel(today)}</button>` : ''}
+      <div class="eyebrow"><span>${today !== null ? 'Or pick another day' : 'Pick the day'}</span></div>
+      ${days}
+      ${gapBlock}`;
   }
-  const byDay = {};
-  for (const g of gaps) (byDay[g.day] ||= []).push(g.code);
-  let h = `<div class="eyebrow"><span>Unfilled required positions</span><span class="mono">${gaps.length}</span></div>`;
-  for (const day of Object.keys(byDay).sort((a, b) => a - b)) {
-    const codes = byDay[day];
-    h += `<div class="card"><div class="ctop">${dateBlock(+day)}
-      <div class="cbody"><div class="line1">${codes.map(c => `<span class="code">${esc(c)}</span>`).join('')}</div>
-      <div class="who">${codes.length} position${codes.length > 1 ? 's' : ''} with nobody assigned</div>
-      <div class="tagrow">${codes.map(c =>
-        `<button class="tag b" data-gap="${day}:${c}">Who can cover ${esc(c)}</button>`).join('')}</div>
-      </div></div></div>`;
+
+  /* ---------- which shift ---------- */
+  const day = state.sickDay;
+  if (!state.sickCode) {
+    const onThatDay = [];
+    for (const pos of s.positions) {
+      const holder = s.staff.find(p => s.cell(p, day) === pos.code);
+      if (holder) onThatDay.push({ code: pos.code, time: pos.time, holder });
+    }
+    return `<button class="btn o sm" data-act="sickback">&lsaquo; Change day</button>
+      <div class="eyebrow"><span>${s.dateLabel(day)} &mdash; who called out?</span></div>
+      ${onThatDay.length ? onThatDay.map(x => `<div class="card"><button class="ctop"
+          data-sickcode="${esc(x.code)}">
+          <div class="cbody"><div class="line1"><span class="code">${esc(x.code)}</span>
+            <span class="time mono">${esc(x.time)}</span></div>
+            <div class="who"><b>${esc(x.holder.name)}</b></div></div>
+          <div class="chev">&rsaquo;</div></button></div>`).join('')
+        : `<div class="empty"><div class="big">Nobody is scheduled that day</div></div>`}`;
   }
+
+  /* ---------- the call list ---------- */
+  const code = state.sickCode;
+  const res = sickCallCandidates(s, day, code, state.rules);
+  const pos = s.position(code);
+  const total = SICK_TIERS.reduce((t, x) => t + res[x.key].length, 0);
+
+  let h = `<button class="btn o sm" data-act="sickcodeback">&lsaquo; Different shift</button>
+    <div class="card totals"><div class="tgrid">
+      <div><div class="tnum">${res.ready.length}</div><div class="tlab">said available</div></div>
+      <div><div class="tnum">${res.free.length}</div><div class="tlab">worth asking</div></div>
+      <div><div class="tnum">${res.working.length}</div><div class="tlab">already on</div></div>
+    </div>
+    <div class="tnote">${s.dateLabel(day)} &middot; <span class="mono">${esc(code)}${
+      pos ? ' ' + esc(pos.time) : ''}</span> &mdash; ${total} people could physically take this.</div>
+    </div>`;
+
+  for (const tier of SICK_TIERS) {
+    const list = res[tier.key];
+    if (!list.length) continue;
+    h += `<div class="eyebrow"><span>${tier.label}</span><span class="mono">${list.length}</span></div>
+      <div class="tierhint">${tier.hint}</div>`;
+    for (const c of list) {
+      const bits = [];
+      if (c.familiar) bits.push(`${c.familiar}\u00d7 ${code} this period`);
+      bits.push(`${c.weeklyHours} paid hrs that week`);
+      if (c.run.length > 1) bits.push(`${c.run.length} days running`);
+      h += `<div class="card"><div class="cand">
+        <div style="flex:1;min-width:0">
+          <div class="cname">${esc(c.name)}${c.declinedOnSheet
+            ? ' <span class="tag">sheet says unavailable</span>' : ''}</div>
+          <div class="planmeta mono">${bits.join(' \u00b7 ')}</div>
+          ${c.flags.length ? `<div class="reasons">${c.flags.map(f =>
+            `<div class="rsn ${f.severity === 'hard' ? 'bad' : f.severity === 'cost' ? 'cost' : 'warn'}">
+              <i>${f.severity === 'cost' ? '$' : '!'}</i>${esc(f.text)}</div>`).join('')}</div>` : ''}
+        </div></div></div>`;
+    }
+  }
+
+  h += `<button class="btn p" data-act="copycall">Copy the call list</button>
+    <div class="disc">Overtime is marked, never disqualifying &mdash; a short-staffed shift is the
+      worse outcome, and that call belongs to your manager. Rest problems are flagged separately
+      because those are a safety question, not a budget one.</div>`;
   return h;
+}
+
+function callListText() {
+  const s = state.sched, day = state.sickDay, code = state.sickCode;
+  const res = sickCallCandidates(s, day, code, state.rules);
+  const L = [`Coverage needed: ${s.dateLabel(day)} ${code}`, ''];
+  for (const tier of SICK_TIERS) {
+    const list = res[tier.key];
+    if (!list.length) continue;
+    L.push(`${tier.label}:`);
+    for (const c of list) {
+      const notes = c.flags.map(f => f.text);
+      L.push(`  ${c.name}${notes.length ? ' \u2014 ' + notes.join('; ') : ''}`);
+    }
+    L.push('');
+  }
+  L.push('Overtime is noted but not disqualifying. Rest flags need a second look.');
+  return L.join('\n');
 }
 
 function viewSetup() {
@@ -277,6 +399,21 @@ function viewSetup() {
       than guess.</div>
     <div class="hint" style="margin-top:8px">Optional: a second sheet named Check, Staffing, or
       Coverage marking which positions are required each day fills in the Gaps tab.</div>
+  </div></div>
+
+  <div class="eyebrow"><span>Paid hours</span></div>
+  <div class="card">
+    ${num('unpaidBreakMinutes', r.unpaidBreakMinutes, 'Unpaid meal period (minutes)',
+          'Time inside the shift that isn\u2019t paid. A 10.5 hr shift with a 30 min meal is 10 paid hours')}
+    ${num('breakAfterHours', r.breakAfterHours, 'Meal applies to shifts over (hours)',
+          'Shorter shifts are paid at full clock time')}
+  </div>
+  <div class="card"><div class="safe-in">
+    <div class="lbl">Why this matters</div>
+    <div class="hint">Overtime, PTO and hour totals are all calculated on <b>paid</b> hours; rest
+      between shifts is calculated on <b>clock</b> hours, because that\u2019s how long someone is
+      actually away. Get the meal period wrong and the tool will invent overtime that doesn\u2019t
+      exist \u2014 four 10.5 hr shifts is 42 on the clock but 40 on the payslip.</div>
   </div></div>
 
   <div class="eyebrow"><span>Overtime and rest rules</span></div>
@@ -492,7 +629,7 @@ function viewWant() {
   const chosen = all.filter(r => state.picks.has(`${r.day}:${r.code}`))
                     .sort((a, b) => a.day - b.day);
   const rec = reconcile(chosen, state.chosen);
-  const sum = summarise(s, rec);
+  const sum = summarise(s, rec, state.rules);
   const stuck = rec.filter(r => !r.best);
 
   let h = stepBar('plan') +
@@ -561,7 +698,7 @@ function planText(style = 'summary') {
   const s = state.sched, me = s.person(state.me);
   const rec = reconcile(cachedPlans().filter(r => state.picks.has(`${r.day}:${r.code}`))
                                      .sort((a, b) => a.day - b.day), state.chosen);
-  const sum = summarise(s, rec);
+  const sum = summarise(s, rec, state.rules);
   const L = [];
 
   if (style === 'group') {
@@ -583,11 +720,11 @@ function planText(style = 'summary') {
       if (fromOthers.length) bits.push(`you'd cover ${fromOthers.map(t => `${firstName(t.from)}'s ${s.dateLabel(t.day)} ${t.code}`).join(' and ')}`);
       if (fromOpen.length)   bits.push(`you'd pick up the open ${fromOpen.map(t => `${s.dateLabel(t.day)} ${t.code}`).join(' and ')}`);
       if (p.pto)             bits.push(p.wantsIt
-        ? `you'd take ${p.pto} hrs of PTO \u2014 the time off you were after`
+        ? `you'd take ${p.pto} hrs of PTO — the time off you were after`
         : `you'd use ${p.pto} hrs of PTO`);
 
-      const net = p.takes.reduce((t, x) => t + s.hoursOf(x.code), 0)
-                - p.gives.reduce((t, x) => t + s.hoursOf(x.code), 0);
+      const net = p.takes.reduce((t, x) => t + s.paidHoursOf(x.code, state.rules), 0)
+                - p.gives.reduce((t, x) => t + s.paidHoursOf(x.code, state.rules), 0);
       const tail = p.pto ? ''
         : net === 0 ? ' \u2014 so your hours come out the same'
         : net > 0 ? ` \u2014 so you'd be up ${Math.round(net * 10) / 10} hrs`
@@ -639,9 +776,9 @@ function openWant(dayIdx, code) {
 
   let h = '';
   if (holder) {
-    const lost = s.hoursOf(code);
+    const lost = s.paidHoursOf(code, state.rules);
     h += `<div class="card"><div class="safe-in">
-      <div class="lbl">${esc(holder.name)} would lose ${lost} hrs</div>
+      <div class="lbl">${esc(holder.name)} would lose ${lost} paid hrs</div>
       <div class="hint">They hold a benefited line, so those hours are income they were counting on.
         Pick the option that suits them, not the one that suits you &mdash; and let them choose.</div>
     </div></div>
@@ -732,7 +869,7 @@ function openCoverage(dayIdx, code, ownerName, postId) {
       h += `<div class="cand">
         <div class="rank ${rankCls}">${n + 1}</div>
         <div style="flex:1;min-width:0">
-          <div class="cname">${esc(c.name)}<span class="hrs">${c.weeklyHours} hrs that week</span></div>
+          <div class="cname">${esc(c.name)}<span class="hrs">${c.weeklyHours} paid hrs that week</span></div>
           <div class="reasons">${c.notes.map(x => `<div class="rsn ${x.kind}"><i>${
             x.kind === 'ok' ? '\u2713' : x.kind === 'trade' ? '\u21C4' :
             x.kind === 'cost' ? '$' : '!'}</i>${esc(x.text)}</div>`).join('')}</div>
@@ -815,6 +952,7 @@ async function handleFile(f) {
     }
     invalidatePlans();
     state.sched = new Schedule(model);
+    state.sched.rules = state.rules;
     state.sched.raw = model;
     state.posts = [];
     state.picks = new Set();
@@ -851,7 +989,7 @@ function fillPicker() {
 
 /* ---------- events ---------- */
 document.addEventListener('click', async e => {
-  const t = e.target.closest('[data-open],[data-post],[data-take],[data-ask],[data-undo],[data-kind],[data-tab],[data-gap],[data-rule],[data-act],[data-avail],[data-want],[data-pick],[data-step],[data-week],[data-plan],[data-wantsoff],#submitPost');
+  const t = e.target.closest('[data-open],[data-post],[data-take],[data-ask],[data-undo],[data-kind],[data-tab],[data-gap],[data-rule],[data-act],[data-avail],[data-want],[data-pick],[data-step],[data-week],[data-plan],[data-wantsoff],[data-sickday],[data-sickcode],#submitPost');
   if (!t) return;
 
   if (t.dataset.avail !== undefined && t.hasAttribute('data-avail')) {
@@ -862,6 +1000,19 @@ document.addEventListener('click', async e => {
   if (t.dataset.want) {
     const [d, c] = t.dataset.want.split(':');
     openWant(+d, c); return;
+  }
+  if (t.dataset.sickday !== undefined && t.hasAttribute('data-sickday')) {
+    state.sickDay = +t.dataset.sickday; state.sickCode = null; render(); return;
+  }
+  if (t.dataset.sickcode) { state.sickCode = t.dataset.sickcode; render(); return; }
+  if (t.dataset.act === 'sickback')     { state.sickDay = null; state.sickCode = null; render(); return; }
+  if (t.dataset.act === 'sickcodeback') { state.sickCode = null; render(); return; }
+  if (t.dataset.act === 'copycall') {
+    const txt = callListText();
+    if (navigator.clipboard) navigator.clipboard.writeText(txt).then(
+      () => toast('Copied \u2014 paste it wherever you\u2019re coordinating'),
+      () => toast('Couldn\u2019t copy on this browser'));
+    return;
   }
   if (t.dataset.wantsoff) {
     const who = t.dataset.wantsoff;
@@ -928,7 +1079,7 @@ document.addEventListener('click', async e => {
   if (t.hasAttribute('data-post')) { openPostForm(+t.dataset.post); return; }
   if (t.dataset.gap) {
     const [day, code] = t.dataset.gap.split(':');
-    openCoverage(+day, code, null, null);
+    state.sickDay = +day; state.sickCode = code; state.tab = 'gaps'; render();
     return;
   }
   if (t.dataset.act === 'closesheet') { closeSheet(); render(); return; }
@@ -936,7 +1087,7 @@ document.addEventListener('click', async e => {
   if (t.dataset.act === 'reset') {
     forget();
     invalidatePlans();
-    state.sched = new Schedule(DEMO); state.sched.raw = null;
+    state.sched = new Schedule(DEMO); state.sched.rules = state.rules; state.sched.raw = null;
     state.posts = seedPosts(state.sched);
     state.me = state.sched.staff[0].name;
     fillPicker(); await save(); render(); toast('Cleared — back to demo data');
@@ -944,7 +1095,7 @@ document.addEventListener('click', async e => {
   }
   if (t.dataset.rule) {
     const k = t.dataset.rule;
-    state.rules[k] = !state.rules[k]; invalidatePlans();
+    state.rules[k] = !state.rules[k]; state.sched.rules = state.rules; invalidatePlans();
     await save(); render(); return;
   }
   if (t.dataset.kind) {
@@ -980,7 +1131,7 @@ document.addEventListener('click', async e => {
 document.addEventListener('change', async e => {
   if (e.target.dataset?.num) {
     const v = parseFloat(e.target.value);
-    if (Number.isFinite(v)) { state.rules[e.target.dataset.num] = v; invalidatePlans(); await save(); }
+    if (Number.isFinite(v)) { state.rules[e.target.dataset.num] = v; state.sched.rules = state.rules; invalidatePlans(); await save(); }
   }
 });
 
@@ -1027,11 +1178,13 @@ function seedPosts(s) {
   if (state.savedModel) {
     try {
       state.sched = new Schedule(state.savedModel);
+      state.sched.rules = state.rules;
       state.sched.raw = state.savedModel;
     } catch { state.savedModel = null; }
   }
   if (!state.sched) {
     state.sched = new Schedule(DEMO);
+    state.sched.rules = state.rules;
     state.sched.raw = null;
     if (!state.posts.length) state.posts = seedPosts(state.sched);
   }

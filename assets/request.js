@@ -46,7 +46,7 @@ export function freeDays(sched, me) {
  * Totals for an assembled set of requests, so the requester can see what the
  * whole package amounts to before asking anyone for anything.
  */
-export function summarise(sched, requests) {
+export function summarise(sched, requests, rules) {
   let gained = 0, givenBack = 0, ptoSpent = 0;
   const people = new Map();
   let openFilled = 0;
@@ -54,7 +54,7 @@ export function summarise(sched, requests) {
   for (const r of requests) {
     const p = r.best;
     if (!p) continue;
-    gained += sched.hoursOf(r.code);
+    gained += sched.paidHoursOf(r.code, rules);
     if (p.kind === 'open') { openFilled++; continue; }
     if (!r.holder) continue;
 
@@ -62,7 +62,7 @@ export function summarise(sched, requests) {
     e.gives.push({ day: r.day, code: r.code });
     if (p.kind === 'swap') {
       e.takes.push({ day: p.giveBack.day, code: p.giveBack.code, from: 'you' });
-      givenBack += sched.hoursOf(p.giveBack.code);
+      givenBack += sched.paidHoursOf(p.giveBack.code, rules);
     } else if (p.kind === 'pickup') {
       e.takes.push({ day: p.alt.day, code: p.alt.code, from: 'open' });
       openFilled++;
@@ -72,10 +72,11 @@ export function summarise(sched, requests) {
       t.gives.push({ day: p.via.day, code: p.via.code, to: r.holder.name });
       /* Marked as wanting the time off, so the day they hand over is a PTO day
        * they asked for. Without this the relay reads as bare hours taken off
-       * them everywhere outside the plan card \u2014 including in the message
-       * you actually send, which is the one place it matters most. */
+       * them everywhere outside the plan card — including in the message you
+       * actually send, which is the one place it matters most. Paid hours,
+       * because a PTO day pays the shift's paid hours, not its clock hours. */
       if (p.thirdTakesPto) {
-        const h = sched.hoursOf(p.via.code);
+        const h = sched.paidHoursOf(p.via.code, rules);
         t.pto += h;
         t.wantsIt = true;
         ptoSpent += h;
@@ -262,7 +263,8 @@ export function requestableOn(sched, me, dayIdx, rules = DEFAULT_RULES) {
 
 /* ---------- making the FTE holder whole ---------- */
 
-const HOURS = (sched, code) => sched.hoursOf(code);
+/** Pay-side hours. PTO, hour deltas and weekly totals all use this. */
+const HOURS = (sched, code, rules) => sched.paidHoursOf(code, rules);
 
 /**
  * Can this person work that day at all? Not committed, and — where the sheet
@@ -310,7 +312,7 @@ export function makeWholePlans(sched, me, dayIdx, code, holder, rules = DEFAULT_
     }];
   }
 
-  const lost = HOURS(sched, code);
+  const lost = HOURS(sched, code, rules);
   const plans = [];
 
   // The requester taking the shift is common to every plan.
@@ -335,7 +337,7 @@ export function makeWholePlans(sched, me, dayIdx, code, holder, rules = DEFAULT_
       { person: holder, day: j, code: mineCode }];
     if (createsGap(sched, moves)) continue;
 
-    const delta = HOURS(sched, mineCode) - lost;
+    const delta = HOURS(sched, mineCode, rules) - lost;
     plans.push({
       kind: 'swap',
       title: `They take your ${sched.dateLabel(j)} ${mineCode}`,
@@ -359,7 +361,7 @@ export function makeWholePlans(sched, me, dayIdx, code, holder, rules = DEFAULT_
     const { flags } = flagsFor(sched, holder, gap.day, gap.code, rules);
     if (flags.some(f => f.severity === 'hard')) continue;
 
-    const delta = HOURS(sched, gap.code) - lost;
+    const delta = HOURS(sched, gap.code, rules) - lost;
     plans.push({
       kind: 'pickup',
       title: `They pick up the open ${sched.dateLabel(gap.day)} ${gap.code}`,
@@ -410,7 +412,7 @@ export function makeWholePlans(sched, me, dayIdx, code, holder, rules = DEFAULT_
   const lostHours = lost;
   relayCandidates.sort((a, b) =>
     (b.wants - a.wants) ||
-    (Math.abs(HOURS(sched, a.tCode) - lostHours) - Math.abs(HOURS(sched, b.tCode) - lostHours)) ||
+    (Math.abs(HOURS(sched, a.tCode, rules) - lostHours) - Math.abs(HOURS(sched, b.tCode, rules) - lostHours)) ||
     (Math.abs(a.j - dayIdx) - Math.abs(b.j - dayIdx)));
 
   for (const { third, j, tCode, wants } of relayCandidates.slice(0, 30)) {
@@ -422,11 +424,11 @@ export function makeWholePlans(sched, me, dayIdx, code, holder, rules = DEFAULT_
       { person: holder, day: j, code: tCode }];
     if (createsGap(sched, moves)) continue;
 
-    const delta = HOURS(sched, tCode) - lost;
+    const delta = HOURS(sched, tCode, rules) - lost;
     const askedFor = wantsOff.has(third.name);
     const relayFlags = wants ? flags : [...flags, {
       severity: 'note', key: 'third-party',
-      text: `${third.name} would lose ${HOURS(sched, tCode)} hrs \u2014 only works if they want the time off`
+      text: `${third.name} would lose ${HOURS(sched, tCode, rules)} paid hrs \u2014 only works if they want the time off`
     }];
 
     plans.push({
@@ -457,7 +459,7 @@ export function makeWholePlans(sched, me, dayIdx, code, holder, rules = DEFAULT_
       kind: 'pto',
       title: 'They take PTO for the day',
       detail: coverageOk
-        ? `Their shift stays covered because you are working it. They spend ${lost} hrs of accrued PTO, so the hours are paid but the balance goes down.`
+        ? `Their shift stays covered because you are working it. They spend ${lost} hrs of accrued PTO \u2014 the paid hours of the shift, not the clock hours, since the meal period is unpaid.`
         : 'This would leave a required position uncovered.',
       ownerHours: 0,
       ptoHours: lost,
@@ -518,7 +520,7 @@ export function reconcile(requests, chosen = new Map()) {
    * choice reserves its give-back ahead of any plan the tool merely ranked
    * first. Walking in list order instead would let an earlier request's top
    * pick spend the very shift a later request was explicitly chosen for, and
-   * report the choice as `chosenMissing` \u2014 the ranking beating the decision,
+   * report the choice as `chosenMissing` — the ranking beating the decision,
    * which is the thing this is meant to prevent. Sorting is stable, so within
    * each group the caller's order still decides a genuine collision. */
   const order = [...requests.keys()].sort((a, b) =>
@@ -565,5 +567,86 @@ export function reconcile(requests, chosen = new Map()) {
   };
 
   for (const ix of order) Object.assign(out[ix], settle(requests[ix]));
+  return out;
+}
+
+/* ============================================================
+   Sick calls
+   ============================================================
+
+   A different problem from a planned swap, and it needs different rules.
+
+   Planned swaps can afford to only consider people who marked themselves
+   available. A sick call cannot: the shift starts in a few hours and someone
+   has to be on it. So this shows everyone who isn't already committed, sorted
+   into who is likely to say yes rather than filtered down to them.
+
+   The one thing it will not do is bury a rest problem. Someone finishing at
+   0100 should not be first pick for an 0630, however desperate the phone call
+   is, so those land in their own tier with the reason attached.
+*/
+
+export const SICK_TIERS = [
+  { key: 'ready', label: 'Said they\u2019re available',
+    hint: 'Marked available on the schedule and not working. Start here.' },
+  { key: 'free', label: 'Not working, didn\u2019t mark availability',
+    hint: 'No commitment that day. Worth a call \u2014 they just never said either way.' },
+  { key: 'tight', label: 'Free, but the timing is rough',
+    hint: 'Could physically do it, but it cuts into rest or makes a long run.' },
+  { key: 'leave', label: 'On approved leave',
+    hint: 'Booked time off. Only if you have exhausted everything else.' }
+];
+
+/**
+ * Who could cover `code` on `dayIdx`, sorted into tiers.
+ * Nobody is hidden except people already working that day, who genuinely can't.
+ */
+export function sickCallCandidates(sched, dayIdx, code, rules = DEFAULT_RULES) {
+  const out = { ready: [], free: [], tight: [], leave: [], working: [] };
+  const anyDeclared = sched.staff.some(p => sched.declaredAvailable(p));
+
+  for (const p of sched.staff) {
+    if (sched.totalShifts(p) === 0) continue;          // not on this schedule at all
+    const state = sched.availability(p, dayIdx);
+    const already = sched.cell(p, dayIdx);
+
+    if (state === 'working') {
+      out.working.push({ person: p, name: p.name, code: already });
+      continue;
+    }
+
+    const { flags, weeklyHours, run, turnaround } = flagsFor(sched, p, dayIdx, code, rules);
+    const hard = flags.filter(f => f.severity === 'hard');
+    const declared = sched.declaredAvailable(p);
+    const marked = declared ? declared.includes(dayIdx) : null;
+    const familiar = sched.timesWorked(p, code);
+
+    const entry = {
+      person: p, name: p.name, flags, weeklyHours, run, turnaround, familiar,
+      marked, load: sched.totalShifts(p),
+      costly: flags.some(f => f.severity === 'cost')
+    };
+
+    let tier;
+    if (state === 'leave')           tier = 'leave';
+    else if (hard.length)            tier = 'tight';
+    else if (run.length >= rules.longRunDays) tier = 'tight';
+    else if (marked === true)        tier = 'ready';
+    else if (marked === false)       tier = 'free';   // sheet says no, but ask anyway
+    else                             tier = anyDeclared ? 'free' : 'ready';
+
+    // Someone the sheet marks unavailable belongs below those who said nothing.
+    entry.declinedOnSheet = marked === false;
+    out[tier].push(entry);
+  }
+
+  const rank = (a, b) =>
+    (a.declinedOnSheet - b.declinedOnSheet) ||
+    (a.costly - b.costly) ||
+    (b.familiar - a.familiar) ||
+    (a.run.length - b.run.length) ||
+    (a.load - b.load);
+
+  for (const k of ['ready', 'free', 'tight', 'leave']) out[k].sort(rank);
   return out;
 }

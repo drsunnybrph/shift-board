@@ -297,3 +297,9 @@ nav button .lb{font-size:10px}
   background:var(--card);border:1px solid #C6D3F8;border-radius:7px;padding:7px 10px;
   width:100%;text-align:left}
 .wantsoff.on{background:var(--green-soft);border-color:#B9DFD9;color:var(--green);font-weight:600}
+
+/* ---------- sick call ---------- */
+.tierhint{font-size:12px;color:var(--muted);margin:-4px 4px 8px;line-height:1.45}
+.cell.av.istoday{border-color:var(--blue);border-width:2px}
+.cell.av.istoday .cc{color:var(--blue);font-size:9px;font-weight:600}
+.cand .cname .tag{margin-left:6px;vertical-align:1px}

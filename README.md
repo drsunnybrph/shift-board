@@ -169,6 +169,29 @@ if they want *specific* days off, choose those plans by hand.
 The finished plan copies two ways. The group-chat version opens with what each person gets, because
 that's what they'll decide on. The manager version is dates, codes, and the coverage assurance.
 
+## Sick calls
+
+A different problem from a planned swap, with different rules.
+
+A planned swap can afford to only consider people who marked themselves available. A sick call
+can't — the shift starts in a few hours and somebody has to be on it. So the Sick call tab shows
+everyone who isn't already committed, sorted into who's worth calling first rather than filtered
+down to them:
+
+- **Said they're available** — marked available and not working
+- **Not working, didn't mark availability** — no commitment that day, they just never said
+- **Free, but the timing is rough** — could physically do it, but it cuts into rest or makes a long run
+- **On approved leave** — booked time off, last resort
+
+Someone the sheet marks unavailable still appears, labelled, below those who said nothing. In a
+sick call you want the whole list; hiding people is how a shift ends up uncovered.
+
+Overtime is marked and never disqualifying. Rest problems get their own tier, because someone
+finishing at 0100 shouldn't be first pick for an 0630 however urgent the call is — that's a safety
+question rather than a budget one.
+
+The list copies as text for whatever channel the coordinating happens in.
+
 ## How ranking works
 
 Three principles are baked into `assets/engine.js`, and they're the opinionated part:
@@ -189,9 +212,30 @@ the decision is informed. Nobody is removed from the list for being expensive.
 Only rest is weighted heavily against, because that one is a safety question rather than a budget
 question.
 
+### Paid hours vs clock hours
+
+These are not the same number and the difference decides whether overtime exists.
+
+A 1430-0100 shift is **10.5 hours on the clock** but **10 hours on the payslip**, because the meal
+period sits inside the shift unpaid. Four of them in a week is 40 paid hours — not overtime. A tool
+that computes overtime off clock time invents penalty pay that isn't there, and computes PTO
+balances people never accrued.
+
+So the split is:
+
+- **Paid hours** drive overtime, PTO, and every hour total shown.
+- **Clock hours** drive rest between shifts, because that's how long someone is actually away.
+
+The meal period is configurable — length, and the shift length it applies above. Departments with a
+second meal period for longer shifts can set `secondBreakAfterHours` in `DEFAULT_RULES`. Check
+yours; the defaults are a starting point, not your employer's policy.
+
 ### Configurable in the Setup tab
 
 | Rule | Default | What it does |
+|---|---|---|
+| Unpaid meal period | 30 min | Time inside a shift that isn't paid |
+| Meal applies above | 5 hrs | Shorter shifts are paid at full clock time |
 |---|---|---|
 | Minimum hours between shifts | 8 | Below this, flagged as a rest problem |
 | Weekly overtime threshold | 40 | Hours in a pay week before OT applies |

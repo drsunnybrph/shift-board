@@ -57,6 +57,7 @@ export class Schedule {
       model.positions.map(p => [p.code, parseSpan(p.time)])
     );
     this._byName   = Object.fromEntries(model.staff.map(p => [p.name, p]));
+    this.rules     = null;   // set by the app so hour maths knows the break policy
   }
 
   person(name)       { return this._byName[name]; }
@@ -89,6 +90,37 @@ export class Schedule {
     return `${MONTH[d.m]} ${d.d}`;
   }
 
+  /**
+   * Clock hours — how long the person is physically at the hospital.
+   * Use this for rest between shifts, never for pay.
+   */
+  clockHoursOf(code) {
+    const sp = this.span(code);
+    return sp ? sp.hours : 0;
+  }
+
+  /**
+   * Paid hours — clock time minus the unpaid meal period.
+   *
+   * This distinction is not cosmetic. A 1430-0100 shift is 10.5 hours on the
+   * clock but 10 hours on the payslip, so four of them in a week is 40 hours
+   * and not overtime. Computing overtime off clock time invents penalty pay
+   * that doesn't exist, and computing PTO off it hands people half an hour of
+   * balance they never accrued.
+   */
+  paidHoursOf(code, rules) {
+    const clock = this.clockHoursOf(code);
+    if (!clock) return 0;
+    const r = rules || this.rules || {};
+    const after = r.breakAfterHours ?? 5;
+    const mins  = r.unpaidBreakMinutes ?? 30;
+    if (clock <= after) return clock;
+    let paid = clock - mins / 60;
+    const second = r.secondBreakAfterHours;
+    if (second && clock > second) paid -= mins / 60;
+    return Math.round(paid * 100) / 100;
+  }
+
   hoursOf(code) {
     const s = this.span(code);
     return s ? s.hours : 0;
@@ -105,12 +137,13 @@ export class Schedule {
     return out;
   }
 
-  weeklyHours(person, i, extraCode = null, extraIdx = null) {
+  /** Paid hours in the pay week containing day i. Drives the overtime flag. */
+  weeklyHours(person, i, extraCode = null, extraIdx = null, rules = null) {
     let total = 0;
     for (const k of this.weekOf(i)) {
-      if (k === extraIdx && extraCode) { total += this.hoursOf(extraCode); continue; }
+      if (k === extraIdx && extraCode) { total += this.paidHoursOf(extraCode, rules); continue; }
       const c = this.cell(person, k);
-      if (this.isWork(c)) total += this.hoursOf(c);
+      if (this.isWork(c)) total += this.paidHoursOf(c, rules);
     }
     return Math.round(total * 10) / 10;
   }
@@ -176,6 +209,9 @@ export class Schedule {
 /* ---------- labor flags ---------- */
 
 export const DEFAULT_RULES = {
+  unpaidBreakMinutes: 30,       // meal period the shift length includes but doesn't pay
+  breakAfterHours: 5,           // shifts longer than this carry an unpaid meal
+  secondBreakAfterHours: null,  // set (e.g. 10) where a second meal period applies
   minTurnaroundHours: 8,        // below this, flag as a rest problem
   cautionTurnaround: 10,
   longRunDays: 6,               // consecutive days before a stretch reads as heavy
@@ -193,7 +229,8 @@ export const DEFAULT_RULES = {
  */
 export function flagsFor(sched, person, i, code, rules = DEFAULT_RULES) {
   const flags = [];
-  const shiftHours = sched.hoursOf(code);
+  const shiftHours = sched.paidHoursOf(code, rules);   // pay decisions
+  const clockHours = sched.clockHoursOf(code);         // rest decisions
 
   const ta = sched.turnaround(person, i, code);
   if (ta.hours != null && ta.hours < rules.minTurnaroundHours) {
@@ -222,11 +259,11 @@ export function flagsFor(sched, person, i, code, rules = DEFAULT_RULES) {
     const dt = shiftHours - rules.seventhDayDoubleAfter;
     flags.push({ severity:'cost', key:'seventh',
       text: dt > 0
-        ? `7th consecutive day — premium, and ${Math.round(dt * 10) / 10} hrs at double time`
+        ? `7th consecutive day — premium, and ${Math.round(dt * 10) / 10} paid hrs at double time`
         : '7th consecutive day in the pay week — premium rate' });
   }
 
-  const wk = sched.weeklyHours(person, i, code, i);
+  const wk = sched.weeklyHours(person, i, code, i, rules);
   if (wk > rules.weeklyOvertimeHours) {
     flags.push({ severity:'cost', key:'weekly-ot',
       text:`${wk} hrs that pay week — ${Math.round((wk - rules.weeklyOvertimeHours) * 10) / 10} over` });
@@ -234,11 +271,11 @@ export function flagsFor(sched, person, i, code, rules = DEFAULT_RULES) {
 
   if (!rules.alternativeWorkweek && shiftHours > 8) {
     flags.push({ severity:'cost', key:'daily-ot',
-      text:`${shiftHours} hr shift — daily overtime past 8` });
+      text:`${shiftHours} paid hrs — daily overtime past 8` });
   }
   if (shiftHours > rules.dailyStraightTimeCap) {
     flags.push({ severity:'cost', key:'double-time',
-      text:`${shiftHours} hr shift — ${Math.round((shiftHours - rules.dailyStraightTimeCap) * 10) / 10} hrs at double time` });
+      text:`${shiftHours} paid hrs — ${Math.round((shiftHours - rules.dailyStraightTimeCap) * 10) / 10} at double time` });
   }
 
   if (rules.noticeDays > 0 && typeof rules.todayIndex === 'number') {

@@ -426,9 +426,15 @@ export function makeWholePlans(sched, me, dayIdx, code, holder, rules = DEFAULT_
 
     const delta = HOURS(sched, tCode, rules) - lost;
     const askedFor = wantsOff.has(third.name);
+    const thirdRisk = sched.hoursAtRisk(third, j, tCode, rules);
+    const thirdLost = HOURS(sched, tCode, rules);
     const relayFlags = wants ? flags : [...flags, {
       severity: 'note', key: 'third-party',
-      text: `${third.name} would lose ${HOURS(sched, tCode, rules)} paid hrs \u2014 only works if they want the time off`
+      text: thirdRisk === 0
+        ? `${third.name} is above their contracted hours that week, so this costs them nothing \u2014 but they still have to agree`
+        : thirdRisk !== null && thirdRisk < thirdLost
+        ? `${third.name} would be ${thirdRisk} hrs under contract that week \u2014 only works if they want the time off`
+        : `${third.name} would lose ${thirdLost} paid hrs \u2014 only works if they want the time off`
     }];
 
     plans.push({
@@ -452,21 +458,52 @@ export function makeWholePlans(sched, me, dayIdx, code, holder, rules = DEFAULT_
     });
   }
 
-  /* --- Plan D: holder takes PTO --- */
+  /* --- Plan D: holder takes the day off --- */
   {
     const coverageOk = !createsGap(sched, baseMoves);
+    const atRisk = sched.hoursAtRisk(holder, dayIdx, code, rules);
+    const fte = sched.fteOf(holder);
+    let ptoDetail, ptoNeeded, ptoTitle;
+    if (!coverageOk) {
+      ptoTitle = 'They take the day off';
+      ptoDetail = 'This would leave a required position uncovered.';
+      ptoNeeded = lost;
+    } else if (atRisk === null) {
+      ptoTitle = 'They take PTO for the day';
+      ptoDetail = `Their shift stays covered because you are working it. Whether they actually need `
+        + `PTO depends on their FTE, which isn't in the schedule \u2014 set it and this will say for certain.`;
+      ptoNeeded = lost;
+    } else if (atRisk === 0) {
+      ptoTitle = 'They simply drop the shift';
+      ptoDetail = `At ${fte} FTE they're already above their contracted hours that week, so giving `
+        + `this up costs them no PTO at all. They just work one fewer shift.`;
+      ptoNeeded = 0;
+    } else if (atRisk < lost) {
+      ptoTitle = `They use ${atRisk} hrs of PTO`;
+      ptoDetail = `At ${fte} FTE only ${atRisk} of the ${lost} hrs fall below their contracted `
+        + `week \u2014 the rest was extra they'd picked up, so that part costs them nothing.`;
+      ptoNeeded = atRisk;
+    } else {
+      ptoTitle = 'They take PTO for the day';
+      ptoDetail = `Their shift stays covered because you are working it. At ${fte} FTE the full `
+        + `${lost} hrs fall below their contracted week, so it comes out of accrued balance.`;
+      ptoNeeded = lost;
+    }
+
     plans.push({
       kind: 'pto',
-      title: 'They take PTO for the day',
-      detail: coverageOk
-        ? `Their shift stays covered because you are working it. They spend ${lost} hrs of accrued PTO \u2014 the paid hours of the shift, not the clock hours, since the meal period is unpaid.`
-        : 'This would leave a required position uncovered.',
+      title: ptoTitle,
+      detail: ptoDetail,
       ownerHours: 0,
-      ptoHours: lost,
+      ptoHours: ptoNeeded,
+      atRisk,
       coverageDelta: 0,
-      flags: coverageOk ? [] : [{ severity: 'hard', key: 'coverage', text: 'Would leave a required position uncovered' }],
-      clean: false,
-      score: coverageOk ? 700 : -100
+      flags: coverageOk ? [] : [{ severity: 'hard', key: 'coverage',
+        text: 'Would leave a required position uncovered' }],
+      clean: coverageOk && atRisk === 0,
+      // Dropping a shift someone was over-scheduled for is a genuinely good
+      // outcome, not a last resort — rank it accordingly.
+      score: !coverageOk ? -100 : atRisk === 0 ? 910 : atRisk < lost ? 780 : 700
     });
   }
 

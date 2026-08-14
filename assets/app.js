@@ -25,6 +25,7 @@ const state = {
   chosen: new Map(),
   sickDay: null,
   yearOverride: null,
+  fte: new Map(),
   sickCode: null,
   wantsOff: new Set()
 };
@@ -446,16 +447,38 @@ function viewSetup() {
       exist \u2014 four 10.5 hr shifts is 42 on the clock but 40 on the payslip.</div>
   </div></div>
 
+  <div class="eyebrow"><span>Who works what fraction</span></div>
+  <div class="card"><div class="safe-in">
+    <div class="lbl">FTE isn&rsquo;t in the schedule</div>
+    <div class="hint">And it can&rsquo;t be worked out from one: somebody at 0.5 who picks up extra
+      looks the same as somebody at 0.9 on a quiet month. It matters because giving up a shift only
+      costs PTO if it drops them below their contracted hours &mdash; above that, they can simply
+      drop it. Fill in whoever you know; the rest stay unknown and the tool will say so.</div>
+  </div></div>
+  <div class="card">${s.staff.filter(p => s.totalShifts(p) > 0).map(p => `<div class="row">
+      <div><div class="lbl">${esc(p.name)}</div>
+        <div class="hint mono">${s.totalShifts(p)} shifts scheduled this period</div></div>
+      <select class="ftesel" data-fte="${esc(p.name)}">${
+        [['', 'not set'], ['0', 'per diem'], ['0.5', '0.5'], ['0.6', '0.6'],
+         ['0.75', '0.75'], ['0.8', '0.8'], ['0.9', '0.9'], ['1', '1.0']]
+        .map(([v, label]) => `<option value="${v}"${
+          String(state.fte.get(p.name) ?? '') === v ? ' selected' : ''}>${label}</option>`).join('')
+      }</select></div>`).join('')}</div>
+
   <div class="eyebrow"><span>Overtime and rest rules</span></div>
   <div class="card">
     ${num('minTurnaroundHours', r.minTurnaroundHours, 'Minimum hours between shifts',
           'Below this is flagged as a rest problem, not a cost one')}
+    ${num('fullTimeWeeklyHours', r.fullTimeWeeklyHours, 'Full-time week (paid hours)',
+          'What 1.0 FTE means here. Used to work out whose hours are actually at risk')}
     ${num('weeklyOvertimeHours', r.weeklyOvertimeHours, 'Weekly overtime threshold',
           'Hours in a pay week before overtime applies')}
     ${num('longRunDays', r.longRunDays, 'Long run threshold',
           'Consecutive days before a stretch reads as heavy')}
     ${sw('alternativeWorkweek', r.alternativeWorkweek, 'Alternative workweek in effect',
-         'On: 10s and 12s are straight time. Off: daily overtime past 8 hours')}
+         'An adopted AWS. Off means daily overtime starts at 8 hours')}
+    ${num('alternativeWorkweekHours', r.alternativeWorkweekHours, 'AWS shift length (paid hours)',
+          'Under the AWS, paid hours in a day past this are overtime')}
     ${sw('seventhDayPremium', r.seventhDayPremium, 'Seventh-day premium',
          'Flag the 7th consecutive day worked in a pay week')}
     ${num('dailyStraightTimeCap', r.dailyStraightTimeCap, 'Double-time threshold',
@@ -524,6 +547,23 @@ function cachedPlans() {
   return _planCache.value;
 }
 function invalidatePlans() { _planCache = { key: null, value: null }; }
+
+/**
+ * FTE can't be read from a schedule and shouldn't be guessed, so it's asked
+ * for at the moment it changes an answer — right on the plan whose cost
+ * depends on it.
+ */
+function ftePicker(name) {
+  const cur = state.fte.get(name);
+  const opts = [
+    ['', 'not set'], ['0', 'per diem'], ['0.5', '0.5'],
+    ['0.6', '0.6'], ['0.75', '0.75'], ['0.8', '0.8'], ['0.9', '0.9'], ['1', '1.0']
+  ];
+  return `<div class="ftebar"><span class="ftelab">${esc(name)}&rsquo;s FTE</span>
+    <select class="ftesel" data-fte="${esc(name)}">${opts.map(([v, label]) =>
+      `<option value="${v}"${String(cur ?? '') === v ? ' selected' : ''}>${label}</option>`).join('')}</select>
+  </div>`;
+}
 
 function planBadge(p) {
   if (!p) return '<span class="tag u">No workable plan</span>';
@@ -840,6 +880,8 @@ function openWant(dayIdx, code) {
             data-wantsoff="${esc(p.third)}">${state.wantsOff.has(p.third)
               ? `\u2713 ${esc(p.third)} wants the time off`
               : `${esc(p.third)} actually wants time off?`}</button>` : ''}
+        ${p.kind === 'relay' ? ftePicker(p.third) : ''}
+        ${p.kind === 'pto' ? ftePicker(holder.name) : ''}
       </div></div>`;
     });
   } else {
@@ -983,7 +1025,7 @@ async function handleFile(f) {
     }
     invalidatePlans();
     state.sched = new Schedule(model);
-    state.sched.rules = state.rules;
+    state.sched.rules = state.rules; state.sched.fte = state.fte;
     state.sched.raw = model;
     state.posts = [];
     state.picks = new Set();
@@ -1138,7 +1180,7 @@ document.addEventListener('click', async e => {
   if (t.dataset.act === 'reset') {
     forget();
     invalidatePlans();
-    state.sched = new Schedule(DEMO); state.sched.rules = state.rules; state.sched.raw = null;
+    state.sched = new Schedule(DEMO); state.sched.rules = state.rules; state.sched.fte = state.fte; state.sched.raw = null;
     state.posts = seedPosts(state.sched);
     state.me = state.sched.staff[0].name;
     fillPicker(); await save(); render(); toast('Cleared — back to demo data');
@@ -1146,7 +1188,7 @@ document.addEventListener('click', async e => {
   }
   if (t.dataset.rule) {
     const k = t.dataset.rule;
-    state.rules[k] = !state.rules[k]; state.sched.rules = state.rules; invalidatePlans();
+    state.rules[k] = !state.rules[k]; state.sched.rules = state.rules; state.sched.fte = state.fte; invalidatePlans();
     await save(); render(); return;
   }
   if (t.dataset.kind) {
@@ -1180,6 +1222,17 @@ document.addEventListener('click', async e => {
 });
 
 document.addEventListener('change', async e => {
+  if (e.target.dataset && e.target.dataset.fte) {
+    const who = e.target.dataset.fte, raw = e.target.value;
+    if (raw === '') state.fte.delete(who);
+    else state.fte.set(who, parseFloat(raw));
+    state.sched.fte = state.fte;
+    try { localStorage.setItem('shiftboard.fte', JSON.stringify([...state.fte])); } catch {}
+    invalidatePlans();
+    if (state.openWantArgs) openWant(...state.openWantArgs);
+    render();
+    return;
+  }
   if (e.target.hasAttribute && e.target.hasAttribute('data-year')) {
     const v = parseInt(e.target.value, 10);
     if (Number.isFinite(v) && v > 2000 && v < 2100) {
@@ -1191,7 +1244,7 @@ document.addEventListener('change', async e => {
   }
   if (e.target.dataset?.num) {
     const v = parseFloat(e.target.value);
-    if (Number.isFinite(v)) { state.rules[e.target.dataset.num] = v; state.sched.rules = state.rules; invalidatePlans(); await save(); }
+    if (Number.isFinite(v)) { state.rules[e.target.dataset.num] = v; state.sched.rules = state.rules; state.sched.fte = state.fte; invalidatePlans(); await save(); }
   }
 });
 
@@ -1236,17 +1289,19 @@ function seedPosts(s) {
     if (w) state.wantsOff = new Set(JSON.parse(w));
     const y = localStorage.getItem('shiftboard.year');
     if (y) state.yearOverride = JSON.parse(y);
+    const ft = localStorage.getItem('shiftboard.fte');
+    if (ft) state.fte = new Map(JSON.parse(ft));
   } catch {}
   if (state.savedModel) {
     try {
       state.sched = new Schedule(state.savedModel);
-      state.sched.rules = state.rules;
+      state.sched.rules = state.rules; state.sched.fte = state.fte;
       state.sched.raw = state.savedModel;
     } catch { state.savedModel = null; }
   }
   if (!state.sched) {
     state.sched = new Schedule(DEMO);
-    state.sched.rules = state.rules;
+    state.sched.rules = state.rules; state.sched.fte = state.fte;
     state.sched.raw = null;
     if (!state.posts.length) state.posts = seedPosts(state.sched);
   }

@@ -58,6 +58,7 @@ export class Schedule {
     );
     this._byName   = Object.fromEntries(model.staff.map(p => [p.name, p]));
     this.rules     = null;   // set by the app so hour maths knows the break policy
+    this.fte       = null;   // name -> FTE, supplied by the app; never inferred
   }
 
   person(name)       { return this._byName[name]; }
@@ -137,6 +138,43 @@ export class Schedule {
     return out;
   }
 
+  /**
+   * Contracted paid hours per week for this person, or null if unknown.
+   *
+   * FTE appears nowhere in a schedule and cannot be inferred from it: someone
+   * at 0.5 who picks up extra looks identical to someone at 0.9 on a light
+   * month. Guessing produces confident wrong answers about whose hours are
+   * actually at risk, so it is recorded by hand or left unknown.
+   */
+  committedWeeklyHours(person, rules) {
+    const r = rules || this.rules || {};
+    const fte = this.fteOf(person);
+    if (fte == null) return null;
+    return fte * (r.fullTimeWeeklyHours ?? 40);
+  }
+
+  fteOf(person) {
+    const m = this.fte;
+    if (!m) return null;
+    const v = m instanceof Map ? m.get(person.name) : m[person.name];
+    return (typeof v === 'number' && v >= 0) ? v : null;
+  }
+
+  /**
+   * Hours this person would actually be short if they gave up `code` on day i.
+   *
+   * Only the hours that fall below their contracted commitment are at risk;
+   * anything above it was extra they picked up. Returns null when FTE is
+   * unknown, so callers can say so rather than assume the worst.
+   */
+  hoursAtRisk(person, i, code, rules) {
+    const committed = this.committedWeeklyHours(person, rules);
+    if (committed == null) return null;
+    const current = this.weeklyHours(person, i, null, null, rules);
+    const after = current - this.paidHoursOf(code, rules);
+    return Math.max(0, Math.round((committed - after) * 100) / 100);
+  }
+
   /** Paid hours in the pay week containing day i. Drives the overtime flag. */
   weeklyHours(person, i, extraCode = null, extraIdx = null, rules = null) {
     let total = 0;
@@ -209,6 +247,7 @@ export class Schedule {
 /* ---------- labor flags ---------- */
 
 export const DEFAULT_RULES = {
+  fullTimeWeeklyHours: 40,      // what 1.0 FTE means in paid hours per week
   unpaidBreakMinutes: 30,       // meal period the shift length includes but doesn't pay
   breakAfterHours: 5,           // shifts longer than this carry an unpaid meal
   secondBreakAfterHours: null,  // set (e.g. 10) where a second meal period applies
@@ -216,7 +255,8 @@ export const DEFAULT_RULES = {
   cautionTurnaround: 10,
   longRunDays: 6,               // consecutive days before a stretch reads as heavy
   weeklyOvertimeHours: 40,
-  alternativeWorkweek: true,    // true = 10s/12s straight time up to the daily cap
+  alternativeWorkweek: true,    // an adopted alternative workweek schedule
+  alternativeWorkweekHours: 10, // paid hours in a day before OT, under that AWS
   dailyStraightTimeCap: 12,     // hours in a day before double time
   seventhDayPremium: true,      // 7th consecutive day in a pay week
   seventhDayDoubleAfter: 8,     // on a 7th day, hours past this are double time
@@ -269,9 +309,16 @@ export function flagsFor(sched, person, i, code, rules = DEFAULT_RULES) {
       text:`${wk} hrs that pay week with this shift — ${Math.round((wk - rules.weeklyOvertimeHours) * 10) / 10} over` });
   }
 
-  if (!rules.alternativeWorkweek && shiftHours > 8) {
+  /* Daily overtime. Without an alternative workweek that's past 8 hours; with
+   * one it's past the adopted shift length, normally 10. Skipping the check
+   * altogether when an AWS is in force is wrong the moment somebody works
+   * longer than the adopted shift — those hours are still overtime. */
+  const dailyThreshold = rules.alternativeWorkweek
+    ? (rules.alternativeWorkweekHours ?? 10)
+    : 8;
+  if (shiftHours > dailyThreshold) {
     flags.push({ severity:'cost', key:'daily-ot',
-      text:`${shiftHours} paid hrs — daily overtime past 8` });
+      text:`${shiftHours} paid hrs — daily overtime past ${dailyThreshold}` });
   }
   if (shiftHours > rules.dailyStraightTimeCap) {
     flags.push({ severity:'cost', key:'double-time',

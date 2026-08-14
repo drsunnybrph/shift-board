@@ -237,6 +237,19 @@ the decision is informed. Nobody is removed from the list for being expensive.
 Only rest is weighted heavily against, because that one is a safety question rather than a budget
 question.
 
+### FTE, and why it has to be typed in
+
+Giving up a shift only costs someone PTO if it drops them **below their contracted hours**.
+Somebody at 0.5 FTE scheduled for 30 hours that week can hand a shift back and still be over
+contract — it costs them nothing, and calling it a PTO day is simply wrong.
+
+FTE appears nowhere in a schedule, and it can't be inferred from one. On a real sheet, a 0.5 FTE
+pharmacist's scheduled hours implied 0.88, and a per diem's implied 0.58. Inference here doesn't
+just fail, it fails confidently, which is worse.
+
+So it's recorded by hand — in the Setup tab for everyone at once, or on the plan whose cost depends
+on it. Anyone left unset stays unknown, and the tool says so rather than assuming the worst.
+
 ### Paid hours vs clock hours
 
 These are not the same number and the difference decides whether overtime exists.
@@ -261,6 +274,9 @@ yours; the defaults are a starting point, not your employer's policy.
 |---|---|---|
 | Unpaid meal period | 30 min | Time inside a shift that isn't paid |
 | Meal applies above | 5 hrs | Shorter shifts are paid at full clock time |
+| Full-time week | 40 paid hrs | What 1.0 FTE means, for working out hours at risk |
+| Alternative workweek | on | An adopted AWS; off means daily overtime starts at 8 |
+| AWS shift length | 10 paid hrs | Under the AWS, paid hours in a day past this are overtime |
 |---|---|---|
 | Minimum hours between shifts | 8 | Below this, flagged as a rest problem |
 | Weekly overtime threshold | 40 | Hours in a pay week before OT applies |

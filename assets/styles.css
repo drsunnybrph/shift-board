@@ -303,3 +303,10 @@ nav button .lb{font-size:10px}
 .cell.av.istoday{border-color:var(--blue);border-width:2px}
 .cell.av.istoday .cc{color:var(--blue);font-size:9px;font-weight:600}
 .cand .cname .tag{margin-left:6px;vertical-align:1px}
+
+/* ---------- FTE ---------- */
+.ftebar{display:flex;align-items:center;justify-content:space-between;gap:8px;
+  margin-top:9px;padding:7px 10px;border:1px solid var(--rule);border-radius:7px;background:var(--paper)}
+.ftelab{font-size:12px;color:var(--muted);font-weight:500}
+.ftesel{background:var(--card);color:var(--ink);border:1px solid var(--rule);border-radius:6px;
+  padding:5px 7px;font-family:'IBM Plex Mono',monospace;font-size:12px;max-width:110px}

@@ -621,8 +621,15 @@ export function sickCallCandidates(sched, dayIdx, code, rules = DEFAULT_RULES) {
     const marked = declared ? declared.includes(dayIdx) : null;
     const familiar = sched.timesWorked(p, code);
 
+    // Two different numbers, and conflating them makes the tool look broken to
+    // anyone who knows the schedule: what they already work this week, and what
+    // they'd work if they took this shift. Show both, labelled.
+    const currentHours = sched.weeklyHours(p, dayIdx, null, null, rules);
+    const shiftsThisWeek = sched.weekOf(dayIdx).filter(i => sched.worksOn(p, i)).length;
+
     const entry = {
       person: p, name: p.name, flags, weeklyHours, run, turnaround, familiar,
+      currentHours, shiftsThisWeek,
       marked, load: sched.totalShifts(p),
       costly: flags.some(f => f.severity === 'cost')
     };

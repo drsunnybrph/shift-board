@@ -317,7 +317,9 @@ function viewGaps() {
     for (const c of list) {
       const bits = [];
       if (c.familiar) bits.push(`${c.familiar}\u00d7 ${code} this period`);
-      bits.push(`${c.weeklyHours} paid hrs that week`);
+      bits.push(c.shiftsThisWeek
+        ? `${c.shiftsThisWeek} shift${c.shiftsThisWeek > 1 ? 's' : ''} that week (${c.currentHours} hrs) \u2192 ${c.weeklyHours} with this`
+        : `nothing else that week \u2014 ${c.weeklyHours} hrs with this`);
       if (c.run.length > 1) bits.push(`${c.run.length} days running`);
       h += `<div class="card"><div class="cand">
         <div style="flex:1;min-width:0">
@@ -347,8 +349,11 @@ function callListText() {
     if (!list.length) continue;
     L.push(`${tier.label}:`);
     for (const c of list) {
-      const notes = c.flags.map(f => f.text);
-      L.push(`  ${c.name}${notes.length ? ' \u2014 ' + notes.join('; ') : ''}`);
+      const load = c.shiftsThisWeek
+        ? `${c.shiftsThisWeek} shift${c.shiftsThisWeek > 1 ? 's' : ''} that week (${c.currentHours} hrs)`
+        : 'nothing else that week';
+      const notes = [load, ...c.flags.map(f => f.text)];
+      L.push(`  ${c.name} \u2014 ${notes.join('; ')}`);
     }
     L.push('');
   }
@@ -894,7 +899,8 @@ function openCoverage(dayIdx, code, ownerName, postId) {
       h += `<div class="cand">
         <div class="rank ${rankCls}">${n + 1}</div>
         <div style="flex:1;min-width:0">
-          <div class="cname">${esc(c.name)}<span class="hrs">${c.weeklyHours} paid hrs that week</span></div>
+          <div class="cname">${esc(c.name)}<span class="hrs">${
+            c.weeklyHours} hrs incl. this shift</span></div>
           <div class="reasons">${c.notes.map(x => `<div class="rsn ${x.kind}"><i>${
             x.kind === 'ok' ? '\u2713' : x.kind === 'trade' ? '\u21C4' :
             x.kind === 'cost' ? '$' : '!'}</i>${esc(x.text)}</div>`).join('')}</div>

@@ -266,7 +266,7 @@ export function flagsFor(sched, person, i, code, rules = DEFAULT_RULES) {
   const wk = sched.weeklyHours(person, i, code, i, rules);
   if (wk > rules.weeklyOvertimeHours) {
     flags.push({ severity:'cost', key:'weekly-ot',
-      text:`${wk} hrs that pay week — ${Math.round((wk - rules.weeklyOvertimeHours) * 10) / 10} over` });
+      text:`${wk} hrs that pay week with this shift — ${Math.round((wk - rules.weeklyOvertimeHours) * 10) / 10} over` });
   }
 
   if (!rules.alternativeWorkweek && shiftHours > 8) {
